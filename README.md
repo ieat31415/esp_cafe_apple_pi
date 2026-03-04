@@ -18,11 +18,11 @@ the instruments talk to their friends in the language of analog.
 You will need a computer with USB connection,
 such as an HP Pavillion or Dell Thinkpad,
 and a USB 2.0 cord.
- 
-You can buy a cd of Redhat Linux 
+ - You can buy a cd of Redhat Linux 
 at your local borders books if you drive there. 
-Devote a few afternoons to properly installing the disc.
-
+Devote a mellow afternoon 
+(cat themed psy dub, evening light)
+ to properly installing the disc.
 - After using your modem to connect to the internet, download arduino. In arduino, click to tools, boards, board manager..., and tap esp32 in search bar. We want the righteous esp32 warez from Espressif systems.
 - Have an espresso.
 - Now pick board ESP32 Dev Module.
