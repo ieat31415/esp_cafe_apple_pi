@@ -16,6 +16,11 @@ This code nestles in the 90s couch of the cafe series instruments by cat rumba. 
 - Click upload. If a new update comes out, please re-download from the green code button, or if you know git, do a git pull.
 - BTW arduino may need some playing around to find the right "port"
 - Have a port wine (optional)
+- From now on you will tinker with the code,
+  save it to a new folder called peters_totally_weird_patch,
+  and upload it in myriad ways and situations.
+- Or you could minimally modify the preset list, etc.
+  
 
 ## About the modules
 - Cafeteria is composed of a digital delay/processor called the digital_cafe, and also an analog section called quantum_experiment, and a special edition theremin dubstep instrument, the tier_horn. The digital_cafe, using an esp32, is progammable and hackable. To do that, start by visiting github.com/pblasser/esp_cafe, and learning to upload your own versions by arduino. 
