@@ -7,7 +7,7 @@
 #include <string.h>
 #include <esp_task_wdt.h>
 
-#define FSMAGIC 0x0250FF0F //quieter than ? 0x0405FF08;
+#define FSMAGIC 0x0250FF0F //quieter than ? 0x0405FF08; //lowers parasitic noise floor
 //try ff50ff08
 //0xFF056408 from code example
  //timekeep-1 startwait5 standbywait100 rstbwait8
