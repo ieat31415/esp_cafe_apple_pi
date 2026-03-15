@@ -29,17 +29,17 @@ Here is an overview of all 24 included presets and how the hardware maps to thei
 
 ### **Samplers & Granular**
 
-* **sampler (one-shot)**: A record/playback engine. Button toggles modes (Lamp OFF \= Armed, Strobe \= Recording, Solid \= Playback). Skip triggers recording or playback. Flip reverses playback. Earth sets the start position of the playhead.  
-* **sampler\_4x**: A multi-slice sampler dividing the buffer into 4 segments. Earth selects the segment. Button toggles Record/Play modes. Skip triggers a re-triggerable one-shot. Flip triggers a non-re-triggerable one-shot.  
-* **granular**: A 16-voice granular engine. Button toggles Record/Play modes. Skip triggers grains. Earth modulates grain start position. Flip toggles grain size.
+* **sampler (one-shot)**: A record/playback engine. Button toggles modes (Lamp OFF \= Armed, Strobe \= Recording, Solid \= Playback). Skip triggers recording or playback. Flip reverses playback. Earth sets the start position of the playhead. Yellow is a trigger at the end of the buffer, useful for looping.
+* **sampler\_4x**: A multi-slice sampler dividing the buffer into 4 segments. Earth selects the segment. Button toggles Record/Play modes. Skip triggers a re-triggerable one-shot. Flip triggers a non-re-triggerable one-shot. Yellow is a trigger at the end of the buffer segment, useful for looping each segment individually.
+* **granular**: A 16-voice granular engine. Button toggles Record/Play modes. Skip triggers grains. Earth modulates grain start position. Flip toggles grain size. Yellow is bit-crushed audio.
 
 ### **Reverbs & Resonators**
 
 * **echo\_mod**: A prime-number based delay/reverb with pitch shifting via Speed knob. Earth controls a low-pass filter. Skip switches room sizes (short vs. long primes). Flip reverses playback. Button freezes the buffer. Yellow is bit-crushed audio. Ash is audio at line level.  
-* **reverb\_spring**: An experimental spring reverb tank. Earth controls dampening. Flip is a latching switch for modulation speed (Surf vs. Lush). Skip freezes the buffer momentarily. Button is a latching freeze, during which skip is ignored.  
-* **reverb\_granular**: A live granular processing mode. Earth controls grain size. Flip pitches the reverb an octave up (Shimmer). Skip momentarily freezes the buffer. Button is a latching freeze, during which skip is ignored.  
-* **resonator**: A 16-band sympathetic resonator. Earth controls the central pitch. Flip switches between Organ and Gong mode. Skip toggles an octave down. Patch audio or press the Button to ping/excite the resonator.  
-* **harmonizer**: Pitch-tracking harmonizer generating 3 delay taps of over/under tones. Earth controls pitch tracking stability vs. LFO modulation. Flip switches between harmonics and sub-harmonics. Skip switches the prime math. Button parameter-locks all controls.
+* **reverb\_spring**: An experimental spring reverb tank. Earth controls dampening. Flip is a latching switch for modulation speed (Surf vs. Lush). Skip freezes the buffer momentarily. Button is a latching freeze, during which skip is ignored. Yellow is bit-crushed audio.
+* **reverb\_granular**: A live granular processing mode. Earth controls grain size. Flip pitches the reverb an octave up (Shimmer). Skip momentarily freezes the buffer. Button is a latching freeze, during which skip is ignored. Yellow is bit-crushed audio.
+* **resonator**: A 16-band sympathetic resonator. Earth controls the central pitch. Flip switches between Organ and Gong mode. Skip toggles an octave down. Patch audio or press the Button to ping/excite the resonator. Yellow is bit-crushed audio.
+* **harmonizer**: Pitch-tracking harmonizer generating 3 delay taps of over/under tones. Earth controls pitch tracking stability vs. LFO modulation. Flip switches between harmonics and sub-harmonics. Skip switches the prime math. Button parameter-locks all controls. Yellow is a stepped harmonic LFO.
 
 ### **Live FX**
 
@@ -63,7 +63,7 @@ Here is an overview of all 24 included presets and how the hardware maps to thei
 
 * **drone**: Navigates a tonal lattice of the first 31 prime numbers to generate complex chords. Earth moves the harmonic center. Button cycles through 4 geometric chord shapes. Skip toggles between dense and spread voicing. Flip toggles between overtones and undertones.  
 * **wavetable**: Wavetable synthesizer with ring modulation against the audio input. Earth modulates pitch. Flip switches between wavetable banks. Skip selects a random waveform. Button freezes the current wave.  
-* **karplus**: A Karplus-Strong string physical model. Button or Skip "plucks" the string. Flip toggles between quantized and fretless tracking. Earth modulates pitch over an 11-semitone range.
+* **karplus**: A Karplus-Strong string physical model. Button or Skip "plucks" the string. Flip toggles between quantized and fretless tracking. Earth modulates pitch over an 11-semitone range. Yellow is the button gate press so that the button can modulate other things. 
 
 ### **Byte Generators**
 
