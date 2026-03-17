@@ -1,6 +1,6 @@
 # **Apple π: Alt. Firmware for Ciat-Lonbarde Cafeteria / Cafe Quantum**
 
-An alternative firmware for the ESP32-based Ciat-Lonbarde Cafeteria / Cafe Quantum. Make sure to refer to the official [Ciat Lonbarde documentation](https://github.com/pblasser/esp_cafe/tree/main) for details on how to upload firmware to Cafe. This firmware expands the Cafe into a multi-fx all-you-can-eat buffet. It has loopers/delays, reverbs, resonators, samplers, synth voices, generative music, live processing and drum machines. Tying it all together is a preset selection system. Preset changes carry over the buffer into a new preset, so you can, for example, build a loop in coco, scramble it up in the scrambler and sync it to a clock in the sampler.
+An alternative firmware for the ESP32-based Ciat-Lonbarde Cafeteria / Cafe Quantum. Make sure to refer to the official [Ciat Lonbarde documentation](https://github.com/pblasser/esp_cafe/tree/main) for details on how to upload firmware to Cafe. Make sure that the folder name is "esp_cafe_apple_pi" because Arduino requires the .ino file to match the folder name with all the source code. This firmware expands the Cafe into a multi-fx all-you-can-eat buffet. It has loopers/delays, reverbs, resonators, samplers, synth voices, generative music, live processing and drum machines. Tying it all together is a preset selection system. Preset changes carry over the buffer into a new preset, so you can, for example, build a loop in coco, scramble it up in the scrambler and sync it to a clock in the sampler.
 
 ## **🍎 Preset Selection Mode**
 
