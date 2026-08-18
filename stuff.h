@@ -158,7 +158,6 @@ inline void write_ash_warm(int raw_val) {
 }
 #define WARM_ASHWRITER(a) write_ash_warm(a)
 
-
 // ---------------------------------------------------------
 // CLEANER WARM ASH AUDIO OUTPUT (8-Bit asymmetrically clipped, full-volume, no dithering)
 // ---------------------------------------------------------
@@ -219,10 +218,6 @@ inline void write_ash_compressed(int raw_val) {
 #define ASHWRITER(a) COMPRESSED_ASHWRITER(a)
 
 
-//ORIGINAL FIRMWARE // REPLACED ABOVE
-// #define ASHWRITER(a) \
-//  REG(ESP32_RTCIO_PAD_DAC1)[0]= \
-//  BIT(10)|BIT(17)|BIT(18)|((a&0xFF)<<19);
 // ---------------------------------------------------------
 // ---------------------------------------------------------
 
@@ -481,8 +476,6 @@ void IRAM_ATTR doubleclicker() {
             // set audio_frozen_state so preset changing doesn't 
             // record over transferred buffers
             audio_frozen_state = true; 
-            // lamp = true;    <<<<<DEBUGGING
-            // PRESETTER(presets[preset]); <<<<<DEBUGGING
           }
        } else if (preset_mode) {
           // SHORT PRESS (While in Preset Mode)

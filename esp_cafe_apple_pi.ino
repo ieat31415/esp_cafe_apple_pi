@@ -32,6 +32,7 @@
   // ------------------------------------------
 
     //  presets[0] = coco_mod;
+    //  presets[0] = coco_og;
     //  presets[1] = echo_mod;
     //  presets[2] = formant;
     //  presets[3] = flanger;
@@ -64,6 +65,10 @@
 
 void (*playlist_classic[])() = {
     coco_mod, echo_mod
+};
+
+void (*playlist_old_school[])() = {
+    coco_og
 };
 
 void (*playlist_loopers[])() = {
@@ -117,15 +122,16 @@ void (*playlist_hello_world[])() = {
     coco_mod, echo_mod, formant, scrambler, sampler, reverb_spring, granular, phasing, reverb_granular, sampler_4x, resonator, harmonizer
 };
 
-void (*playlist_clean_dirty_a[])() = {
+void (*playlist_mono[])() = {
     saturator, reverb_spring, reverb_granular
 };
+
 
 // ------------------------------------------
 // PRESET PLAYLIST SELECTION TO LOAD
 // ------------------------------------------
 // Type the name of the playlist you want to load onto the Cafe: <<<<<<<<<<<<<<<<<<<<<<<<<----------
-#define ACTIVE_PLAYLIST playlist_hello_world
+#define ACTIVE_PLAYLIST playlist_test
 
 // ============================================================================
 // BOOT CONFIGURATION

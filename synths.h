@@ -68,7 +68,7 @@ void morph_to_16bit(int new_owner, int target_len) {
 // same as coco, just with changes below
 // yellow is a clock pulse
 // earth is record on/off switch
-// ash is clean audio output at half volume of input
+// ash is clean audio output
 
 void IRAM_ATTR coco_mod() {
 
@@ -92,7 +92,6 @@ morph_to_8bit(); //needed for buffer translation
         }
     }
 
-//MODIFIED FIRMWARE
  int earth_cv = EARTHREAD;
 
 // HYSTERESIS (Using earth_cv)
@@ -112,9 +111,8 @@ morph_to_8bit(); //needed for buffer translation
          earth_last_state = 0; 
      }
  }
-///////////END MODIFIED
 
- //pout=dellius(t,gyo,lamp); // ORIGINAL
+
  pout=dellius(t,gyo,audio_frozen_state); //disabing lamp during preset selection to allow buffer transfer
  if (FLIPPERAT) t--; //inverted to make work with sampler based presets
  else t++; 
@@ -127,13 +125,8 @@ morph_to_8bit(); //needed for buffer translation
   lastskp = 0;
  } 
 
-//ORIGNAL FIRMWARE
-//  adc_read = EARTHREAD;
-//  ASHWRITER(adc_read); //rand()
 
-//MODIFIED FIRMWARE
-ASHWRITER(pout); //Sends wet audio through ASH. Swap out with "ASHWRITER" for a full volume line out
-///////////END MODIFIED
+ASHWRITER(pout); //Sends wet audio through ASH. Try swapping out with other Ashes
 
 //ORIGINAL FIRMWARE
 //  YELLOWERS(t)
@@ -160,6 +153,81 @@ ASHWRITER(pout); //Sends wet audio through ASH. Swap out with "ASHWRITER" for a 
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// ==========================================
+// 1.5 COCO ORIGINAL
+// ==========================================
+// use to mimic the Cocoquantus v2
+// be sure to set the Boot Configuration to "true" for the startup noise
+// yellow is a the organ sound (memory address)
+// earth is record on/off switch
+// ash is clean audio output
+
+void IRAM_ATTR coco_og() {
+
+morph_to_8bit(); //needed for buffer translation
+
+ //INTABRUPT
+ //REG(GPIO_STATUS_W1TC_REG)[0]=0xFFFFFFFF; 
+
+ DACWRITER(pout)
+ gyo=ADCREADER // Audio Input signal is read here
+
+// --- WAKE UP & BOOT SYNC ---
+    static bool is_first_run = true;
+    if (is_first_run) {
+        is_first_run = false;
+        // Pre-read the Earth knob to anchor the state without toggling the lamp
+        if (EARTHREAD > TRIGGER_ON_THRESHOLD) {
+            earth_last_state = 1;
+        } else {
+            earth_last_state = 0;
+        }
+    }
+
+ int earth_cv = EARTHREAD;
+
+// HYSTERESIS (Using earth_cv)
+ if (earth_last_state == 0) {
+     if (earth_cv > TRIGGER_ON_THRESHOLD) {
+         lamp = !lamp; 
+         audio_frozen_state = lamp;
+        //  if (lamp) REG(GPIO_OUT1_W1TS_REG)[0] = BIT(1); //TO BE REPLACED BELOW FOR BUFFER TRANSFER
+        //  else REG(GPIO_OUT1_W1TC_REG)[0] = BIT(1); 
+        if (lamp) { LAMP_ON; } 
+        else { LAMP_OFF; }
+         earth_last_state = 1; 
+     }
+ } 
+ else { 
+     if (earth_cv < TRIGGER_OFF_THRESHOLD) {
+         earth_last_state = 0; 
+     }
+ }
+
+
+ pout=dellius(t,gyo,audio_frozen_state); //disabing lamp during preset selection to allow buffer transfer
+ if (FLIPPERAT) t--; //inverted to make work with sampler based presets
+ else t++; 
+ t=t&0x1FFFF;
+ if (SKIPPERAT)  {
+  if (lastskp==0) delayskp = t;
+  lastskp = 1;
+ } else {
+  if (lastskp) t=delayskp;
+  lastskp = 0;
+ } 
+
+
+ASHWRITER(pout); //Sends wet audio through ASH. Try swapping out with other Ashes
+
+YELLOW_BINARY(t)
+
+ // HEARTBEAT
+ REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
+ REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+ REG(I2S_CONF_REG)[0] |= (BIT(5)); //start rx 
+}
 
 ///////ORINGAL FIRMWARE
 // int myNumbers[] = {32000, 31578, 22444, 25111};
@@ -6654,7 +6722,6 @@ void IRAM_ATTR polyrhythms() {
     
     DACWRITER(output_sample);
     ASHWRITER(output_sample);
-
     
     // HEARTBEAT
     REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 

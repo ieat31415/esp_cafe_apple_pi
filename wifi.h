@@ -1,6 +1,6 @@
 
-
 #include <WiFi.h>
+
 
 void theCoolWifiInitiation() { 
   Serial.begin(115200);
