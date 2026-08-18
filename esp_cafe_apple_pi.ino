@@ -131,7 +131,7 @@ void (*playlist_mono[])() = {
 // PRESET PLAYLIST SELECTION TO LOAD
 // ------------------------------------------
 // Type the name of the playlist you want to load onto the Cafe: <<<<<<<<<<<<<<<<<<<<<<<<<----------
-#define ACTIVE_PLAYLIST playlist_test
+#define ACTIVE_PLAYLIST playlist_hello_world
 
 // ============================================================================
 // BOOT CONFIGURATION
