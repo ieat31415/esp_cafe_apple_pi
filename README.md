@@ -128,6 +128,7 @@ The firmware uses ash and yellow for different purposes depending on the design 
 * WARM\_ASHWRITER(val): Outputs an 8-bit, asymmetrically clipped, full-volume signal to Ash. Shifts the DC center to clip the LM3900 chip.  
 * YELLOW\_AUDIO(val): Acts as a 3.4-bit pseudo-DAC. Maps 12-bit audio to the 10 Yellow pins to create a bit-crushed output. Can be used for odd stereo image with ash.  
 * YELLOW\_PULSE(val): Sends a square pulse. Ideal for sending clock/sync signals to external gear. Could be expanded for more square wave type synthesis.
+* YELLOW\_BINARY(val): The original Cocoquantus yellow organ sound. It is the buffer-position Binary Code in waveform.
 
 ### **Inputs**
 
