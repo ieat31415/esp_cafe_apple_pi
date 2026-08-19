@@ -122,7 +122,7 @@ The OS overrides the Lamp during the preset menu. Inside your presets, you can c
 
 The firmware uses ash and yellow for different purposes depending on the design of the preset, but often they provide audio or clocking, both for interfacing with the outside world, but just as well in the Ciat Lonbarde ecosystem as well. 
 
-# COMPRESSED\_ASHWRITER(val): Boosted into limiter with asymeterical clipping, full volume. Outputs a clean, softly clipped audio at line level. Optimizes the dynamic range in the buffer with quiet audio input.
+* COMPRESSED\_ASHWRITER(val): Boosted into limiter with asymeterical clipping, full volume. Outputs a clean, softly clipped audio at line level. Optimizes the dynamic range in the buffer with quiet audio input.
 * CLEAN\_ASHWRITER(val): Outputs a 7-bit, symmetrical, unclipped half-volume signal to the Ash jack. Uses dithering and delta-sigma noise shaping. Boost 6db to match unity input gain.  
 * CLEANER_ASHWRITER(val): A refinement of the warm\_ashwriter below. 8-Bit asymmetrically clipped, full-volume, no dithering. 
 * WARM\_ASHWRITER(val): Outputs an 8-bit, asymmetrically clipped, full-volume signal to Ash. Shifts the DC center to clip the LM3900 chip.  
