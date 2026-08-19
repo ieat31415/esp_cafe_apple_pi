@@ -21,6 +21,7 @@ Here is an overview of all 24 included presets and how the hardware maps to thei
 
 ### **Loopers & Delays**
 
+* **coco\_og**: The original Cocoquantus-style coco. All bananas work as in Cocoquantus, except earth is the record button switch.
 * **coco\_mod**: A version of the coco preset with a few additions. The first difference is that in this version Record mode (Lamp Off) is the boot state, so the buffer automatically overwrites the noise. Earth acts as a record on/off toggle. Yellow outputs a clock pulse (16ppqn). Ash outputs clean audio at half volume.  
 * **scrambler**: A live stutter/glitch effect utilizing a dual-buffer architecture. The playback buffer is divided into segments. Earth selects the active playback segment. Skip toggles between 16 or 3 segment divisions. Flip enables random skipping between segments. Button freezes the buffer.  
 * **formant**: A vowel filter bank applied to the audio buffer. Earth modulates the vowel tuning.  
