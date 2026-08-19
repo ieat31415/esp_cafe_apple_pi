@@ -122,7 +122,9 @@ The OS overrides the Lamp during the preset menu. Inside your presets, you can c
 
 The firmware uses ash and yellow for different purposes depending on the design of the preset, but often they provide audio or clocking, both for interfacing with the outside world, but just as well in the Ciat Lonbarde ecosystem as well. 
 
+# COMPRESSED\_ASHWRITER(val): Boosted into limiter with asymeterical clipping, full volume. Outputs a clean, softly clipped audio at line level. Optimizes the dynamic range in the buffer with quiet audio input.
 * CLEAN\_ASHWRITER(val): Outputs a 7-bit, symmetrical, unclipped half-volume signal to the Ash jack. Uses dithering and delta-sigma noise shaping. Boost 6db to match unity input gain.  
+* CLEANER_ASHWRITER(val): A refinement of the warm\_ashwriter below. 8-Bit asymmetrically clipped, full-volume, no dithering. 
 * WARM\_ASHWRITER(val): Outputs an 8-bit, asymmetrically clipped, full-volume signal to Ash. Shifts the DC center to clip the LM3900 chip.  
 * YELLOW\_AUDIO(val): Acts as a 3.4-bit pseudo-DAC. Maps 12-bit audio to the 10 Yellow pins to create a bit-crushed output. Can be used for odd stereo image with ash.  
 * YELLOW\_PULSE(val): Sends a square pulse. Ideal for sending clock/sync signals to external gear. Could be expanded for more square wave type synthesis.
@@ -141,7 +143,7 @@ To prevent memory crashes while changing between 8-bit tape loops and 16-bit syn
 ## **📓 Change Log**
 
 ### **Version 1.4142**
-* New Cleaner Ash output (otherss available in stuff)
+* New Cleaner Ash output (others available in stuff)
 * Improved button response in Preset Selection Mode
 * Added visual feedback in Preset Selection Mode
 * Configuration for Original Cocoquantus startup mode available
