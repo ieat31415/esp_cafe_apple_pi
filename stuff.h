@@ -209,6 +209,11 @@ inline void write_ash_compressed(int raw_val) {
 }
 #define COMPRESSED_ASHWRITER(a) write_ash_compressed(a)
 
+//ORIGINAL FIRMWARE // REPLACED ABOVE
+// #define ASHWRITER(a) \
+//  REG(ESP32_RTCIO_PAD_DAC1)[0]= \
+//  BIT(10)|BIT(17)|BIT(18)|((a&0xFF)<<19);
+
 // ---------------------------------------------------------
 // SET DEFAULT ASH BELOW
 // ---------------------------------------------------------

@@ -25,7 +25,7 @@ Here is an overview of all 24 included presets and how the hardware maps to thei
 * **coco\_mod**: A version of the coco preset with a few additions. The first difference is that in this version Record mode (Lamp Off) is the boot state, so the buffer automatically overwrites the noise. Earth acts as a record on/off toggle. Yellow outputs a clock pulse (16ppqn). Ash outputs clean audio at half volume.  
 * **scrambler**: A live stutter/glitch effect utilizing a dual-buffer architecture. The playback buffer is divided into segments. Earth selects the active playback segment. Skip toggles between 16 or 3 segment divisions. Flip enables random skipping between segments. Button freezes the buffer.  
 * **formant**: A vowel filter bank applied to the audio buffer. Earth modulates the vowel tuning.  
-* **external\_sync**: A delay synchronized to an external clock. Patch a clock (regular or irregular) into Skip to quantize the buffer length. Flip reverses the playhead. Earth is a record on/off toggle. Button freezes the buffer (which continues to quantize while frozen).  
+* **external\_sync**: A delay synchronized to an external clock. Good for syncing two cafes. Patch a clock (like a coco clock out, but it could also be irregular) into Skip to quantize the buffer length. Flip reverses the playhead. Earth is a record on/off toggle. Button freezes the buffer (which continues to quantize while frozen).  
 * **phasing**: Records a loop and plays it back with 4 drifting playheads heads. Button toggles between Record/Play modes. Skip triggers a one-shot recording (in Rec mode) or randomizes the playheads (in Play mode). Flip reverses all playhead directions. Earth modulates phase alignment. Yellow is bit-crushed audio. Ash outputs clean audio at half volume.
 
 ### **Samplers & Granular**
@@ -144,11 +144,13 @@ To prevent memory crashes while changing between 8-bit tape loops and 16-bit syn
 
 ## **📓 Change Log**
 
-### **Version 1.4142**
+### **Version 1.41421**
 * New Cleaner Ash output (others available in stuff)
 * Improved button response in Preset Selection Mode
 * Added visual feedback in Preset Selection Mode
 * Configuration for Original Cocoquantus startup mode available
 * Preset that replicates Cocoquantus available as coco_og
 * Fixed DC Offset in Ash for Saturator Preset
+* Plus: External Sync preset modified to sync with another cafe module in coco_mod preset
+* Plus: coco_mod yellow clock out expanded for different PPQN settings
 

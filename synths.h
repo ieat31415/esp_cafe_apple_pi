@@ -99,8 +99,6 @@ morph_to_8bit(); //needed for buffer translation
      if (earth_cv > TRIGGER_ON_THRESHOLD) {
          lamp = !lamp; 
          audio_frozen_state = lamp;
-        //  if (lamp) REG(GPIO_OUT1_W1TS_REG)[0] = BIT(1); //TO BE REPLACED BELOW FOR BUFFER TRANSFER
-        //  else REG(GPIO_OUT1_W1TC_REG)[0] = BIT(1); 
         if (lamp) { LAMP_ON; } 
         else { LAMP_OFF; }
          earth_last_state = 1; 
@@ -128,22 +126,31 @@ morph_to_8bit(); //needed for buffer translation
 
 ASHWRITER(pout); //Sends wet audio through ASH. Try swapping out with other Ashes
 
-//ORIGINAL FIRMWARE
-//  YELLOWERS(t)
-
 //MODIFIED FIRMWARE
-// --- YELLOW 4 PPQN SYNC CLOCK ---
-    // isolate the 16th note window (8192 samples)
-    if ((t & 0x1FFF) < 2000) { 
-        // if DOWNBEAT // to be used for clock reset in conjunction with comparator to extract this accent pule
-        if (t < 8192) {
-            YELLOW_AUDIO(4095); // 3.3V accent
-        } else {
-            YELLOW_AUDIO(3000); // 2.4V clock
-        }
+
+// Set desired clock division (PPQN where the length of the buffer is considered 1 bar (4 quarter notes))
+// Use these options below: 13 (4 PPQN), 15 (1 PPQN), 17 (0.25 PPQN)
+// external_sync preset assumes 13 (4 PPQN) to sync together the buffers
+static uint8_t clock_shift = 13; 
+
+// Dynamically calculate the window and mask based on the shift
+uint32_t window_size = 1 << clock_shift;
+uint32_t clock_mask = window_size - 1;
+
+// --- YELLOW VARIABLE SYNC CLOCK ---
+// Send this to any clocked device
+// Try sending to Clicker as a metronome to play in time with the coco buffer
+if ((t & clock_mask) < 2000) { 
+    // if DOWNBEAT (checks if we are in the very first window of the buffer)
+    if (t < window_size) {
+        YELLOW_AUDIO(4095); // 3.3V accent
     } else {
-        YELLOW_AUDIO(0); 
+        YELLOW_AUDIO(3000); // 2.4V clock
     }
+} else {
+    YELLOW_AUDIO(0); 
+}
+
 ///////////END MODIFIED
  
  // HEARTBEAT
@@ -228,6 +235,7 @@ YELLOW_BINARY(t)
  REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
  REG(I2S_CONF_REG)[0] |= (BIT(5)); //start rx 
 }
+
 
 ///////ORINGAL FIRMWARE
 // int myNumbers[] = {32000, 31578, 22444, 25111};
@@ -2330,29 +2338,33 @@ void IRAM_ATTR saturator() {
 // ==========================================
 // a synced delay to an external clock
 // quantizes the buffer based on clock
+// when using to sync one cafe to the other in coco_mod preset, set the coco_mod ppqn to 13 (4 PPQN)
 // skip is the clock, patch a clock signal here
 // clock doesn't have to be regular signal
 // flip reverses the play head
 // button freezes the buffer
-// buffer continues to quantize while frozen
-// use as way to quantize loop from other preset
+// buffer does not quantize while frozen
 // earth is a record on/off toggle
 // yellow passes the external clock
 // ash is the wet audio
 
 void IRAM_ATTR external_sync() {
 
+    // Buffer transfer
+    morph_to_8bit();
+
    // --- STATE VARIABLES ---
     static int sync_head = 0;
+    static uint32_t sync_head_fine = 0; // Fractional playhead
+    static uint32_t head_inc = 4096;    // 1.0x Speed
 
-    if (current_buffer_owner != 5) {
-        morph_to_16bit(5, 65536);
-        sync_head = 0;
-    }
+    // Clock output sync (Maps Varispeed length to 131072 for clock math)
+    static uint32_t virtual_t_fine = 0; 
+    static uint32_t virtual_inc = 4096;
 
     // Clock Logic
     static int samples_since_clock = 0;
-    static int sync_loop_len = 27562; // 0.625s / 96 BPM Default
+    static int sync_loop_len = 8192; // Default to 16th note equivalent based on local clock
     static bool gate_state = false;
     
     // Filter States
@@ -2371,8 +2383,9 @@ void IRAM_ATTR external_sync() {
     // CROSSFADE TAIL STATES
     static bool tail_active = false;
     static int tail_pos = 0;
+    static uint32_t tail_pos_fine = 0;
     static int tail_timer = 0;
-    static int tail_buffer_len = 65536;
+    static int tail_buffer_len = 131072;
 
     // SPLICE FADES
     static int fade_state = 0; 
@@ -2389,14 +2402,16 @@ void IRAM_ATTR external_sync() {
         skip_integrator = 0;
         tail_active = false;
         fade_state = 0; // Reset start/stop fades
-        
-        // --- NEW: POWER OF TWO QUANTIZATION (Boot) ---
-        int max_mult = 65536 / sync_loop_len;
-        int power_of_two = 1;
-        while ((power_of_two * 2) <= max_mult) {
-            power_of_two *= 2;
-        }
-        current_buffer_len = power_of_two * sync_loop_len;
+
+        // Initialize to full phrase length
+        sync_head = 0;
+        sync_head_fine = 0;
+
+        virtual_t_fine = 0;
+        virtual_inc = 4096;
+
+        head_inc = 4096;
+        current_buffer_len = 131072;
     }
 
     // ============================
@@ -2428,7 +2443,7 @@ void IRAM_ATTR external_sync() {
         last_frozen = audio_frozen_state;
         is_frozen = audio_frozen_state;
 
-        // --- NEW: TRIGGER TAPE SPLICE FADES ---
+        // --- TRIGGER TAPE SPLICE FADES ---
         if (is_frozen) {
             fade_state = 1; // Fading OUT live audio, IN looped audio
             fade_timer_btn = 4000; // 90ms Tail (Post-roll)
@@ -2446,7 +2461,7 @@ void IRAM_ATTR external_sync() {
     sync_earth_lpf += (earth_raw - sync_earth_lpf) >> 5; 
 
     // ============================
-    // CLOCK SYNC (Integrator + Measure)
+    // CLOCK SYNC
     // ============================
     
     samples_since_clock++;
@@ -2471,81 +2486,109 @@ void IRAM_ATTR external_sync() {
 
     // HANDLE CLOCK TRIGGER
     if (trigger_clock) {
-        // Measure Interval (if valid speed)
         if (samples_since_clock > 150) { 
-            int new_loop_len = samples_since_clock;
             
-            // Safety Limits
-            if (new_loop_len > 29900) new_loop_len = 29900;
-            if (new_loop_len < 100) new_loop_len = 100;
+            if (!is_frozen) {
+                int raw_len = samples_since_clock;
+                int multiplier = 16; 
+                int target_phrase_len = raw_len * multiplier;
 
-            // --- JITTER HYSTERESIS & CROSSFADE ---
-            // Only jump if the tempo changed by more than 10 samples (~0.2ms)
-            int diff = new_loop_len - sync_loop_len;
-            if (diff < 0) diff = -diff; // Absolute value
-            
-            if (diff > 10) {
-                tail_active = true;
-                tail_timer = 2000; // ~45ms fade window
-                tail_buffer_len = current_buffer_len; // Save the old wrap boundary
+                int new_buffer_len;
+                uint32_t new_head_inc;
+
+                // DYNAMIC FRACTIONAL PHASE ACCUMULATOR
+                if (target_phrase_len > 131072) {
+                    new_buffer_len = 131072;
+                    new_head_inc = (131072U << 12) / target_phrase_len;
+                } else {
+                    new_buffer_len = target_phrase_len;
+                    new_head_inc = 4096;
+                }
                 
-                // Calculate exactly where the read head WAS going to be before the jump
-                int offset = (sync_earth_lpf * 16);
-                tail_pos = sync_head - sync_loop_len - offset;
-                while (tail_pos < 0) tail_pos += tail_buffer_len;
-                while (tail_pos >= tail_buffer_len) tail_pos -= tail_buffer_len;
+                // Calculates the mapped speed required to reach 131072 exactly at phrase end
+                uint32_t new_virtual_inc = (131072U << 12) / target_phrase_len;
+
+                int new_loop_len = target_phrase_len / multiplier;
+                if (new_loop_len < 100) new_loop_len = 100;
+
+                int diff = new_loop_len - sync_loop_len;
+                if (diff < 0) diff = -diff; 
                 
-                sync_loop_len = new_loop_len; // Apply the new tempo
+                if (diff > 10) {
+                    tail_active = true;
+                    tail_timer = 2000; 
+                    tail_buffer_len = current_buffer_len; 
+                    
+                    int offset = (sync_earth_lpf * 32); 
+                    tail_pos = sync_head - offset; 
+                    while (tail_pos < 0) tail_pos += tail_buffer_len;
+                    while (tail_pos >= tail_buffer_len) tail_pos -= tail_buffer_len;
+                    tail_pos_fine = tail_pos << 12;
+                    
+                    sync_loop_len = new_loop_len; 
+                }
+                
+                current_buffer_len = new_buffer_len;
+                head_inc = new_head_inc;
+
+                virtual_inc = new_virtual_inc;
+
+                // Resync virtual phase to match physical phase jumps
+                if ((sync_head_fine >> 12) >= current_buffer_len) {
+                    sync_head_fine = 0;
+                    sync_head = 0;
+                    virtual_t_fine = 0;
+                } else {
+                    // Safe uint64 math forces virtual_t into perfect proportional alignment 
+                    uint64_t v_fine = ((uint64_t)sync_head * (131072U << 12)) / current_buffer_len;
+                    virtual_t_fine = (uint32_t)v_fine;
+                }
+
             }
         }
-        samples_since_clock = 0;
         
-        // Trigger Yellow Pulse
-        yellow_timer = 2000; // ~40ms Pulse
-    }
-    
-    // Safety Limits
-    if (sync_loop_len > 29900) sync_loop_len = 29900;
-    if (sync_loop_len < 100) sync_loop_len = 100;
-
-    // --- QUANTIZE THE LOOP BOUNDARY ---
-    if (trigger_clock) {
-        // Find the maximum subdivision (1, 2, 4, 8, 16) that fits the 65k limit
-        int max_mult = 65536 / sync_loop_len;
-        int power_of_two = 1;
-        while ((power_of_two * 2) <= max_mult) {
-            power_of_two *= 2;
-        }
-        current_buffer_len = power_of_two * sync_loop_len;
+        samples_since_clock = 0;
+        yellow_timer = 2000; 
     }
 
     // ============================
-    // AUDIO ENGINE
+    // AUDIO ENGINE (8-BIT DELLIUS)
     // ============================
     
     int ac_in = raw_in - 2048;
     ac_in = (ac_in * 3) >> 1; 
-    
-    int read_pos = sync_head - sync_loop_len;
-    
-    // Wrap Read Head
-    while (read_pos < 0) read_pos += current_buffer_len;
-    while (read_pos >= current_buffer_len) read_pos -= current_buffer_len;
-    
-    //int16_t delayed_sample = sync_buffer[read_pos];
-    int16_t delayed_sample = buffer_16bit[read_pos];
 
-    // APPLY CROSSFADE
+    // SLIGHTLY OFFSET READ HEADS
+    // Set the read heads ahead of the write head's direction of travel
+    int dir = FLIPPERAT ? -1 : 1;
+    
+    int pos_a = sync_head + dir;
+    if (pos_a < 0) pos_a += current_buffer_len;
+    if (pos_a >= current_buffer_len) pos_a -= current_buffer_len;
+    
+    int pos_b = sync_head + (dir * 2);
+    if (pos_b < 0) pos_b += current_buffer_len;
+    if (pos_b >= current_buffer_len) pos_b -= current_buffer_len;
+    
+    // FETCH SAMPLES
+    int16_t val_a = (int16_t)(dellius(pos_a, 0, true) - 2048);
+    int16_t val_b = (int16_t)(dellius(pos_b, 0, true) - 2048);
+
+    // LINEAR INTERPOLATION
+    // Extracts the 12-bit fractional position between indices
+    int32_t frac = sync_head_fine & 0xFFF;
+    int16_t delayed_sample = (int16_t)(((val_a * (4096 - frac)) + (val_b * frac)) >> 12);
+
     // --- APPLY CROSSFADE ---
     if (tail_active) {
-        int32_t t_samp = buffer_16bit[tail_pos];
+        int32_t t_samp = (int32_t)(dellius(tail_pos, 0, true) - 2048);
         int32_t d_samp = delayed_sample;
         
         // Linear crossfade
         delayed_sample = (int16_t)(((t_samp * tail_timer) + (d_samp * (4000 - tail_timer))) / 4000);
         
         // Advance the tail playhead
-        if (FLIPPERAT) tail_pos++; else tail_pos--;
+        if (FLIPPERAT) tail_pos--; else tail_pos++;
         while (tail_pos < 0) tail_pos += tail_buffer_len;
         while (tail_pos >= tail_buffer_len) tail_pos -= tail_buffer_len;
         
@@ -2557,32 +2600,53 @@ void IRAM_ATTR external_sync() {
     if (!is_frozen || fade_state == 1) {
         sync_tape_lpf += (ac_in - sync_tape_lpf) >> 2;
         int16_t new_audio = (int16_t)sync_tape_lpf;
+        int16_t old_audio = (int16_t)(dellius(sync_head, 0, true) - 2048);
+        int16_t final_mix = new_audio;
         
         if (fade_state == 1 && fade_timer_btn > 0) {
             // Freezing (Post-roll): Fade from Live down to Loop
-            int16_t old_audio = buffer_16bit[sync_head];
-            buffer_16bit[sync_head] = (int16_t)(((new_audio * fade_timer_btn) + (old_audio * (4000 - fade_timer_btn))) / 4000);
-            
+            final_mix = (int16_t)(((new_audio * fade_timer_btn) + (old_audio * (4000 - fade_timer_btn))) / 4000);
             fade_timer_btn--;
             if (fade_timer_btn <= 0) fade_state = 0;
         } 
         else if (fade_state == 2 && fade_timer_btn > 0) {
             // Unfreezing (Pre-roll): Fade from Loop up to Live
-            int16_t old_audio = buffer_16bit[sync_head];
-            buffer_16bit[sync_head] = (int16_t)(((new_audio * (4000 - fade_timer_btn)) + (old_audio * fade_timer_btn)) / 4000);
-            
+            final_mix = (int16_t)(((new_audio * (4000 - fade_timer_btn)) + (old_audio * fade_timer_btn)) / 4000);
             fade_timer_btn--;
             if (fade_timer_btn <= 0) fade_state = 0;
         } 
         else {
-            // Normal live overwrite
-            buffer_16bit[sync_head] = new_audio;
+            // live overwrite
+            final_mix = new_audio;
         }
+
+        // Convert Signed AC back to Unsigned DC and Write
+        int write_val = final_mix + 2048;
+        if (write_val > 4095) write_val = 4095;
+        if (write_val < 0) write_val = 0;
+        dellius(sync_head, write_val, false);
     }
 
-    // Move Head
-    if (FLIPPERAT) sync_head++;
-    else sync_head--;
+    // --- FRACTIONAL PLAYHEAD ADVANCE ---
+    if (FLIPPERAT) {
+        if (sync_head_fine < head_inc) sync_head_fine += (current_buffer_len << 12);
+        sync_head_fine -= head_inc;
+
+        // Advance Virtual Clock backwards
+        if (virtual_t_fine < virtual_inc) virtual_t_fine += (131072U << 12);
+        virtual_t_fine -= virtual_inc;
+
+    } else {
+        sync_head_fine += head_inc;
+        if (sync_head_fine >= (current_buffer_len << 12)) sync_head_fine -= (current_buffer_len << 12);
+
+        // Advance Virtual Clock forwards
+        virtual_t_fine += virtual_inc;
+        if (virtual_t_fine >= (131072U << 12)) virtual_t_fine -= (131072U << 12);
+    }
+
+    sync_head = sync_head_fine >> 12;
+    uint32_t virtual_t = virtual_t_fine >> 12; // Maps to 0 - 131071 time range
 
     // --- QUANTIZE LOOP LENGTH ---
     if (sync_head >= current_buffer_len) sync_head = 0;
@@ -2603,19 +2667,30 @@ void IRAM_ATTR external_sync() {
     
     DACWRITER(pout);
     ASHWRITER(pout);
-    
+
     // ============================
-    // YELLOW (CLOCK OUT)
+    // YELLOW (VARIABLE SYNC CLOCK)
     // ============================
     
-    if (yellow_timer > 0) {
-        YELLOW_PULSE(4095);
-        yellow_timer--;
+    // Set your desired PPQN Output Speed here! 
+    // Options: 13 (4 PPQN), 15 (1 PPQN), 17 (0.25 PPQN)
+    static uint8_t clock_shift = 15; 
+
+    // since 'virtual_t' mimics 't', the coco_mod math drops in
+    uint32_t window_size = 1 << clock_shift;
+    uint32_t clock_mask = window_size - 1;
+
+    if ((virtual_t & clock_mask) < 2000) { 
+        if (virtual_t < window_size) {
+            YELLOW_AUDIO(4095); // 3.3V accent
+        } else {
+            YELLOW_AUDIO(3000); // 2.4V clock
+        }
     } else {
-        YELLOW_PULSE(0); 
+        YELLOW_AUDIO(0); 
     }
 
-    current_buffer_head = sync_head; // Update the OS with the tape splice location!
+    current_buffer_head = sync_head; // Update the OS with the tape splice location
 
     REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
     REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;

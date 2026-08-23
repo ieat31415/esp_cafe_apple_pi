@@ -10,13 +10,15 @@
 // ------------------------------------------
 
 // ==========================================
-// CHANGE LOG --- VERSION 1.4142
+// CHANGE LOG --- VERSION 1.41421
 // ==========================================
 // New Cleaner Ash output (otherss available in stuff)
 // Improved button response in Preset Selection Mode
 // Added visual feedback in Preset Selection Mode
 // Configuration for Original Cocoquantus startup mode available.
 // Fixed DC Offset in Ash for Saturator Preset
+// Plus: External Sync optomized to sync with a Coco_mod preset
+// Plus: coco_mod expanded to set PPQN
 // ------------------------------------------
 
 //90s cafe, warm tones, friends, extravagant laptop bezels.
@@ -75,6 +77,7 @@ void (*playlist_loopers[])() = {
     coco_mod, formant, scrambler, sampler, sampler_4x, granular, phasing
 };
 
+// use sync playlist for two cafes where is in coco_mod that will be the leader, setting the main delay time, and the other is in external_sync which will stay in sync no matter its speed knob
 void (*playlist_sync[])() = {
     coco_mod, external_sync, sampler, sampler_4x
 };
@@ -111,19 +114,17 @@ void (*playlist_ambient[])() = {
     reverb_spring, echo_mod, reverb_granular, drone, phasing
 };
 
+// here for reference. will likely crash due to memory fragmentation from the variables across all these presets prevent continguous memory for the buffer.
 void (*playlist_all[])() = {
-    coco_mod, echo_mod, formant, flanger, karplus, resonator, 
-    reverb_spring, reverb_granular, harmonizer, saturator, external_sync, 
-    scrambler, sampler, sampler_4x, granular, phasing, bytebeats_mod, 
-    megabytebeats, arcade, FX, wavetable, drone, groovebox, polyrhythms
+    coco_mod, echo_mod, formant, flanger, karplus, resonator, reverb_spring, reverb_granular, harmonizer, saturator, external_sync, scrambler, sampler, sampler_4x, granular, phasing, bytebeats_mod, megabytebeats, arcade, FX, wavetable, drone, groovebox, polyrhythms
 };
 
 void (*playlist_hello_world[])() = {
-    coco_mod, echo_mod, formant, scrambler, sampler, reverb_spring, granular, phasing, reverb_granular, sampler_4x, resonator, harmonizer
+    coco_mod, echo_mod, formant, scrambler, sampler, reverb_spring, granular, phasing, reverb_granular, sampler_4x, resonator, harmonizer, flanger
 };
 
 void (*playlist_mono[])() = {
-    saturator, reverb_spring, reverb_granular
+    saturator, reverb_spring, reverb_granular, flanger
 };
 
 
