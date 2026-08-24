@@ -1993,7 +1993,8 @@ void IRAM_ATTR saturator() {
     static int lp_mem = 0;
     
     // TAPE STATE 
-    static int16_t tape_flange[256]; 
+    //static int16_t tape_flange[256]; //replaced below by putting this buffer in a specified memory ppol
+    #define tape_flange ((int16_t *)preset_volatile_pool)
     static uint8_t tape_f_ptr = 0;
 
     // RADIO STATE
@@ -3016,14 +3017,13 @@ void IRAM_ATTR sampler() {
     // --- WAKE UP BLOCK --- // NEEDED FOR BUFFER TRANSFER
     static bool was_in_menu = false;
     if (preset_mode) {
-        was_in_menu = true; // We are in the selector menu
+        was_in_menu = true; 
     } else if (was_in_menu) {
-        // We JUST exited the menu!
         was_in_menu = false;
-        system_mode = true;  // Force Safe Playback mode!
-        is_active = false;   // Kill any active recording
-        btn_timer = 20000;   // Lockout the button for 0.5s to kill the Ghost Click!
-        skip_integrator = 0; // Dump any floating noise
+        system_mode = true;  
+        is_active = false;   
+        btn_timer = 20000;   // Lockout the button for 0.5s to prevent unfreezing sample
+        skip_integrator = 0; // Dump any floating noise on skip pin
     }
 
     static int master_vol = 0; 
@@ -3035,7 +3035,8 @@ void IRAM_ATTR sampler() {
     static bool flip_gate_active = false; 
 
     // PRE-ROLL
-    static int16_t pre_roll[PRE_ROLL_LEN]; 
+    // static int16_t pre_roll[PRE_ROLL_LEN]; //replaced below to use specified memory pool to avoid memory fragmentation
+    #define pre_roll ((int16_t *)preset_volatile_pool)
     static int pr_head = 0;
 
 

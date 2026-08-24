@@ -10,6 +10,10 @@
 #define DRUM_RAM_SIZE 32000 
 uint8_t *drum_ram_buffer;
 
+// 30KB shared pool for any preset that needs heavy variables
+#define PRESET_POOL_SIZE 30000 
+uint8_t *preset_volatile_pool;
+
 // pointers: Index 0=Soft, 1=Med, 2=Loud
 uint8_t *current_kick[3];
 uint8_t *current_snare[3];
@@ -555,6 +559,7 @@ int dellius(int ptr, int val, bool but) {
 // ---------------------------------------------------------
 
 void initDEL() {
+  Serial.println("    -> initDEL: Allocating delay buffers..."); //For Debugging
   delaybuffa = (uint8_t *)malloc((DELAYSIZE >> 2) + (DELAYSIZE >> 1)); 
   delaybuffb = (uint8_t *)malloc((DELAYSIZE >> 2) + (DELAYSIZE >> 1)); 
 
@@ -562,6 +567,7 @@ void initDEL() {
   // safety check
   if (delaybuffa == NULL || delaybuffb == NULL) {
     // buffer set up fails, flash the orange lamp rapidly 
+    Serial.println("    -> FATAL: Malloc failed! Entering infinite loop.");
     while (1) {
       REG(GPIO_OUT1_W1TS_REG)[0] = BIT(1);
       delay(50);
@@ -569,6 +575,8 @@ void initDEL() {
       delay(50);
     }
   }
+
+  Serial.printf("    -> Success! Buffer A at: %p | Buffer B at: %p\n", delaybuffa, delaybuffb); //For Debugging
   /////END
 
   /////NEW FIRMWARE
@@ -576,7 +584,7 @@ void initDEL() {
   //drum_ram_buffer = (uint8_t*)malloc(DRUM_RAM_SIZE); //not enough spare memory for seperate drum buffer
   drum_ram_buffer = delaybuffa; //would use the shared buffer, but since dellius reads 12 bit audio, it doesn't work well
 
-  // Safety: if run out of RAM, use the main delay buffer // DON'T THINK THIS IS NEEDED ANYMORE
+  // Safety: if run out of RAM, use the main delay buffer
   if (drum_ram_buffer == NULL) {
     // Blink LED forever to signal Out Of Memory
     while (1) {
@@ -585,6 +593,12 @@ void initDEL() {
       delay(100);
     }
   }
+
+  // Memory pool for large variables
+  preset_volatile_pool = (uint8_t *)malloc(PRESET_POOL_SIZE);
+  if (preset_volatile_pool == NULL) {
+  }
+
   ///////////////END
 
   delptr = delaybuffa;

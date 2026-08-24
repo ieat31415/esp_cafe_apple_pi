@@ -116,7 +116,7 @@ void (*playlist_ambient[])() = {
 
 // here for reference. will likely crash due to memory fragmentation from the variables across all these presets prevent continguous memory for the buffer.
 void (*playlist_all[])() = {
-    coco_mod, echo_mod, formant, flanger, karplus, resonator, reverb_spring, reverb_granular, harmonizer, saturator, external_sync, scrambler, sampler, sampler_4x, granular, phasing, bytebeats_mod, megabytebeats, arcade, FX, wavetable, drone, groovebox, polyrhythms
+    coco_mod, coco_og, echo_mod, formant, flanger, karplus, resonator, reverb_spring, reverb_granular, harmonizer, saturator, external_sync, scrambler, sampler, sampler_4x, granular, phasing, bytebeats_mod, megabytebeats, arcade, FX, wavetable, drone, groovebox, polyrhythms
 };
 
 void (*playlist_hello_world[])() = {
@@ -151,8 +151,14 @@ void setup() {
 
   // FOR DEBUGGING
   Serial.begin(115200);
+  delay(1000); // Give the serial monitor a moment to connect
+  Serial.printf("\n--- BOOT START ---\n");
+  Serial.printf("Initial Free Heap: %d bytes\n", ESP.getFreeHeap());
+  Serial.println("[1] Running SETUPPERS (Hardware Init)...");
 
   SETUPPERS
+  Serial.printf("[1] SETUPPERS Complete. Free Heap: %d bytes\n", ESP.getFreeHeap()); // FOR DEBUGGING
+
   //theCoolWifiInitiation();
 
   // STARTUP WITH FREEZE CONFIGURATION
@@ -172,6 +178,11 @@ void setup() {
   [0] = BIT(10) | BIT(17) | BIT(18) | (64 << 19);  // 64 to get to linearity of LM3900 past the diode drop on input
   //END
 
+  // FOR DEBUGGING
+  Serial.println("[2] Routing Preset Playlist...");
+  active_preset_count = sizeof(ACTIVE_PLAYLIST) / sizeof(ACTIVE_PLAYLIST[0]);
+  Serial.printf("    Active Preset Count: %d\n", active_preset_count);
+
 
   // PRESET PLAYLIST ROUTER
   // counts the presets in the ACTIVE_PLAYLIST   
@@ -180,8 +191,11 @@ void setup() {
   for (int i = 0; i < active_preset_count; i++) {
       presets[i] = ACTIVE_PLAYLIST[i];
   }  
+  Serial.printf("[2] Routing Complete. Free Heap: %d bytes\n", ESP.getFreeHeap()); // FOR DEBUGGING
 
   DOUBLECLK
+
+  Serial.println("[3] Starting Startup PRESETTER (Preset 0)..."); // FOR DEBUGGING
 
   // ------------------------------------------
   // ------------------------------------------
@@ -189,6 +203,10 @@ void setup() {
      PRESETTER(presets[0])
   // ------------------------------------------
   // ------------------------------------------
+
+  // FOR DEBUGGING
+  Serial.printf("[3] PRESETTER Complete. Free Heap: %d bytes\n", ESP.getFreeHeap());
+  Serial.println("[4] Running Boot Animation...");
 
   //BOOT ANIMATION
   for (int i = 0; i < 5; i++) {
@@ -202,6 +220,7 @@ void setup() {
 
 LAMPLIGHT_OVERRIDE;   // Sync the physical hardware following boot animation
 
+Serial.println("--- BOOT COMPLETE: Entering Main Loop ---\n"); // FOR DEBUGGING
 }
 
 ////////////
@@ -237,12 +256,6 @@ void loop() {
 
   // --- PRESET SELECTION MODE ---
   if (preset_mode) {
-    // 1. Pause the audio stream to prevent memory crashes
-    //REG(I2S_CONF_REG)[0] &= ~(BIT(5)); //
-
-    // --> NEW: Disconnect the external clock! 
-    // This stops the preset from firing and attempting to read the paused I2S stream.
-    // detachInterrupt(2);
     
     Serial.println("Preset Mode Active: Waiting for physical button punch-in...");
 
@@ -253,7 +266,7 @@ void loop() {
 
     int flash_tick = 0;
 
-    // 2. The Latching Loop
+    // The Latching Loop
     while (preset_mode) {
       bool threshold_met = false;
       
@@ -355,7 +368,7 @@ void loop() {
     REG(I2S_CONF_REG)[0] &= ~(BIT(5)); // Pause I2S
     detachInterrupt(2);                // Pause Clock
 
-    // ---> NEW: Load the new preset safely while everything is paused!
+    // Load the new preset safely while everything is paused
     PRESETTER(presets[preset]);
 
     if (presets[preset] == polyrhythms) {
@@ -364,9 +377,9 @@ void loop() {
 
     // Resume Audio Engine
     lamp = audio_frozen_state; 
-    LAMPLIGHT_OVERRIDE; //
-    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF; //
-    REG(I2S_CONF_REG)[0] |= (BIT(5));     //
+    LAMPLIGHT_OVERRIDE; 
+    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF; 
+    REG(I2S_CONF_REG)[0] |= (BIT(5));     
   }
   delay(10);
 }
