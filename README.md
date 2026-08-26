@@ -87,6 +87,8 @@ To use one of these lists, type its name into the `#define ACTIVE_PLAYLIST` line
 
 * **`playlist_classic`**: A modded Cafe experience.  
   * *(0) coco\_mod, (1) echo\_mod*  
+* **`playlist_old_school`**: A modded Cafe experience.  
+  * *(0) coco\_og, (1) echo\_og*  
 * **`playlist_loopers`**: Focused on manipulating live audio buffers.  
   * *(0) coco\_mod, (1) formant, (2) scrambler, (3) sampler, (4) sampler\_4x, (5) granular, (6) phasing*  
 * **`playlist_reverbs`**: Presets capable of syncing to or generating clock signals.  
