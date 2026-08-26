@@ -36,6 +36,7 @@ Here is an overview of all 24 included presets and how the hardware maps to thei
 
 ### **Reverbs & Resonators**
 
+* **echo\_og**: The original reverb from the original firmware, but with some additions. Turn up feedback to hear the resonance. There are 4 playheads defined above the preset in the code. These values may be modded to try different resonances. Earth is a record on/off switch. Flip reverses playback. Skip is diffusion. Yellow is the organ tone.
 * **echo\_mod**: A prime-number based delay/reverb with pitch shifting via Speed knob. Earth controls a low-pass filter. Skip switches room sizes (short vs. long primes). Flip reverses playback. Button freezes the buffer. Yellow is bit-crushed audio. Ash is audio at line level.  
 * **reverb\_spring**: An experimental spring reverb tank. Earth controls dampening. Flip is a latching switch for modulation speed (Surf vs. Lush). Skip freezes the buffer momentarily. Button is a latching freeze, during which skip is ignored. Yellow is bit-crushed audio.
 * **reverb\_granular**: A live granular processing mode. Earth controls grain size. Flip pitches the reverb an octave up (Shimmer). Skip momentarily freezes the buffer. Button is a latching freeze, during which skip is ignored. Yellow is bit-crushed audio.

@@ -238,52 +238,102 @@ YELLOW_BINARY(t)
 
 
 ///////ORINGAL FIRMWARE
-// int myNumbers[] = {32000, 31578, 22444, 25111};
-// //you need to make a table that is 0,3000,5578
-// int myPlacers[] = {0, 0, 0, 0};
-// int tapsz=sizeof(myPlacers)>>2;
-
-//int myNumbers[] = {12000, 11578, 14444, 15111,8900, 10278, 12004, 12111};
+int myNumbers[] = {32000, 31578, 22444, 25111};
 //you need to make a table that is 0,3000,5578
-//int myPlacers[] = {0, 0, 0, 0,0,0,0,0};
+int myPlacers[] = {0, 0, 0, 0};
+int tapsz=sizeof(myPlacers)>>2;
 
-//int tapsz=sizeof(myPlacers)>>2;
+// Alternate values:
+// int myNumbers[] = {12000, 11578, 14444, 15111,8900, 10278, 12004, 12111};
+// int myPlacers[] = {0, 0, 0, 0, 0, 0, 0, 0};
+// int tapsz=sizeof(myPlacers)>>2;
 
 
 // ==========================================
 // ECHO ORIGINAL - MODIFIED
 // ==========================================
-// // yellow is
-// // earth is
+// // the original echo preset but with additions including:
+// // earth is the record on/off switch
 // // ash is audio out at line level
+// // skip is like diffusion
+// // and as in the original:
 // // speed is like pre-delay
-// void IRAM_ATTR echo() {
-//  //INTABRUPT
-//  //REG(GPIO_STATUS_W1TC_REG)[0]=0xFFFFFFFF; 
-//  DACWRITER(pout)
-//  gyo=ADCREADER
-//  pout =0;
-//  for (int i=0; i<tapsz; i++) 
-//   pout+=dellius((myPlacers[i]<<2)+i,gyo,lamp);
-//  pout = pout>>2;
-//  if (FLIPPERAT)
-//   for (int i=0; i<tapsz; i++)  //sizeof(myPlacers)
-//    myPlacers[i]++;
-//  else 
-//   for (int i=0; i<tapsz; i++) 
-//    myPlacers[i]--;
-//  for (int i=0; i<tapsz; i++) {
-//   myPlacers[i] %= myNumbers[i];
-//   if (myPlacers[i]<0) myPlacers[i] += myNumbers[i];
-//  }
-//  if (SKIPPERAT)  {} else {} 
-//  REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
-//  adc_read = EARTHREAD;
-//  ASHWRITER(pout); //rand()
-//  REG(I2S_INT_CLR_REG)[0]=0xFFFFFFFF;
-//  REG(I2S_CONF_REG)[0] |= (BIT(5)); //start rx
-//  YELLOWERS(myPlacers[0]+myPlacers[1]+myPlacers[2]+myPlacers[3]);
-// }
+// // yellow is like the organ sound
+// // flip is a reverse switch
+
+void IRAM_ATTR echo_og() {
+ //INTABRUPT
+ //REG(GPIO_STATUS_W1TC_REG)[0]=0xFFFFFFFF; 
+
+// --- WAKE UP & BOOT SYNC ---
+    static bool is_first_run = true;
+    static bool prev_skip = false; // Memory for our edge detector
+
+    if (is_first_run) {
+        is_first_run = false;
+        // Pre-read the Earth knob to anchor the state without toggling the lamp
+        if (EARTHREAD > TRIGGER_ON_THRESHOLD) {
+            earth_last_state = 1;
+        } else {
+            earth_last_state = 0;
+        }
+    }
+    
+ int earth_cv = EARTHREAD;
+
+// HYSTERESIS (Using earth_cv)
+ if (earth_last_state == 0) {
+     if (earth_cv > TRIGGER_ON_THRESHOLD) {
+         lamp = !lamp; 
+         audio_frozen_state = lamp;
+        if (lamp) { LAMP_ON; } 
+        else { LAMP_OFF; }
+         earth_last_state = 1; 
+     }
+ } 
+ else { 
+     if (earth_cv < TRIGGER_OFF_THRESHOLD) {
+         earth_last_state = 0; 
+     }
+ }
+
+ DACWRITER(pout)
+ gyo=ADCREADER
+ pout =0;
+ for (int i=0; i<tapsz; i++) 
+  pout+=dellius((myPlacers[i]<<2)+i,gyo,lamp);
+ pout = pout>>2;
+ if (FLIPPERAT)
+  for (int i=0; i<tapsz; i++)  //sizeof(myPlacers)
+   myPlacers[i]++;
+ else 
+  for (int i=0; i<tapsz; i++) 
+   myPlacers[i]--;
+ for (int i=0; i<tapsz; i++) {
+  myPlacers[i] %= myNumbers[i];
+  if (myPlacers[i]<0) myPlacers[i] += myNumbers[i];
+ }
+
+// SKIP diffusion
+// randomizes the placers
+ bool current_skip = (SKIPPERAT != 0); 
+ if (current_skip && !prev_skip) {
+     for (int i = 0; i < tapsz; i++) {
+         // rand() generates a random number, and modulo (%) safely traps 
+         // it within the maximum boundary size for each individual tap
+         myPlacers[i] = rand() % myNumbers[i];
+     }
+ }
+ prev_skip = current_skip; // Save the state for the next sample
+
+ REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
+ adc_read = EARTHREAD;
+ ASHWRITER(pout); //rand()
+ YELLOW_BINARY(myPlacers[0]+myPlacers[1]+myPlacers[2]+myPlacers[3]);
+ REG(I2S_INT_CLR_REG)[0]=0xFFFFFFFF;
+ REG(I2S_CONF_REG)[0] |= (BIT(5)); //start rx
+
+}
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // ==========================================

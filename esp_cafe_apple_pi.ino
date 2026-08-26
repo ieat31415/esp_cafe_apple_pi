@@ -70,7 +70,7 @@ void (*playlist_classic[])() = {
 };
 
 void (*playlist_old_school[])() = {
-    coco_og
+    coco_og, echo_og
 };
 
 void (*playlist_loopers[])() = {
@@ -116,7 +116,7 @@ void (*playlist_ambient[])() = {
 
 // here for reference. will likely crash due to memory fragmentation from the variables across all these presets prevent continguous memory for the buffer.
 void (*playlist_all[])() = {
-    coco_mod, coco_og, echo_mod, formant, flanger, karplus, resonator, reverb_spring, reverb_granular, harmonizer, saturator, external_sync, scrambler, sampler, sampler_4x, granular, phasing, bytebeats_mod, megabytebeats, arcade, FX, wavetable, drone, groovebox, polyrhythms
+    coco_mod, coco_og, echo_og, echo_mod, formant, flanger, karplus, resonator, reverb_spring, reverb_granular, harmonizer, saturator, external_sync, scrambler, sampler, sampler_4x, granular, phasing, bytebeats_mod, megabytebeats, arcade, FX, wavetable, drone, groovebox, polyrhythms
 };
 
 void (*playlist_hello_world[])() = {
