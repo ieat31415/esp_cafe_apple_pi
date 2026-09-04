@@ -8,7 +8,7 @@ An alternative firmware for the ESP32-based Ciat-Lonbarde Cafeteria / Cafe Quant
 2. Download Apple Pi firmware as .zip and remove "-main" from the uncompressed, downloaded folder name.
 3. Open the `esp_cafe_apple_pi.ino` file in the Arduino IDE
 4. Go to Arduino IDE's Tools \-\> Partition Scheme menu and change it to Huge APP (3MB No OTA\/1MB SPIFFS). 
-5. Optional: Go to Arduino IDE's Tools \-\> Erase All Flash Before Sketch Uploadand set it to Enabled. This may be needed to troubleshoot, but if used, make sure to turn back to "disabled" so that tape decks will not be erased.
+5. Optional: Go to Arduino IDE's Tools \-\> Erase All Flash Before Sketch Upload and set it to Enabled. This may be needed to troubleshoot, but if used, make sure to turn back to "disabled" so that tape decks will not be erased.
 6. Check Boot Configuration in the `.ino` file and set as desired.
 7. Setup the preset playlist in the `.ino` file to be loaded as desired.
 
@@ -26,8 +26,8 @@ This firmware contains 31 presets and a new preset selection system to navigate 
 
 **How to save a loop:**
 
-1. **Go to `tape\_deck` preset:** Include `tape\_deck` preset in active playlist and navigate to it.  
-2. **Audition Tape:** `tape\_deck` always starts in slot 1. Patch to earth to hear the current tape slot.  
+1. **Go to `tape_deck` preset:** Include `tape_deck` preset in active playlist and navigate to it.  
+2. **Audition Tape:** `tape_deck` always starts in slot 1. Patch to earth to hear the current tape slot.  
 3. **Save Tape:** Patch the orange banana at the top of cafe to flip and turn antenna knob down. Touch the bottom gold screw to save buffer into current slot. Lamp will flash rapidly during save.
 4. **Switch tapes:** Press the button the number of times corresponding to your desired tape deck slot index. 
    * *Example: 0 presses \= Slot 1 (the first tape). *The Lamp will flash the index with each button press to confirm the count.*   
