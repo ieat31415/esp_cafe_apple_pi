@@ -1,5 +1,13 @@
 #include "setup.h"
 
+
+// =========================================================
+// TAPE SAVE SETUP--- NEW FIRMWARE
+// =========================================================
+volatile int tape_index = BOOT_TAPE_SLOT;
+volatile bool tape_save_flag = false;
+volatile bool tape_load_flag = false;
+
 // =========================================================
 // SAMPLE MANAGEMENT STUFF --- NEW FIRMWARE
 // =========================================================

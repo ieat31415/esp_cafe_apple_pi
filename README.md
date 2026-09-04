@@ -1,10 +1,20 @@
 # **Apple π: Alt. Firmware for Ciat-Lonbarde Cafeteria / Cafe Quantum**
 
-An alternative firmware for the ESP32-based Ciat-Lonbarde Cafeteria / Cafe Quantum. Make sure to refer to the official [Ciat Lonbarde documentation](https://github.com/pblasser/esp_cafe/tree/main) for details on how to upload firmware to Cafe and add one extra step to remove "-main" from the downloaded folder name. This firmware expands the Cafe into a multi-fx all-you-can-eat buffet. It has loopers/delays, reverbs, resonators, samplers, synth voices, generative music, live processing and drum machines. Tying it all together is a preset selection system. Preset changes carry over the buffer into a new preset, so you can, for example, build a loop in coco, scramble it up in the scrambler and sync it to a clock in the sampler.
+An alternative firmware for the ESP32-based Ciat-Lonbarde Cafeteria / Cafe Quantum. This firmware expands the Cafe into a multi-fx all-you-can-eat buffet. It has loopers/delays, reverbs, resonators, samplers, synth voices, generative music, live processing and drum machines. Tying it all together is a preset selection system. Preset changes carry over the buffer into a new preset, so you can, for example, build a loop in coco, scramble it up in the scrambler and sync it to a clock in the sampler. Loops can also be saved and recalled across power cycles and then moved between presets.
+
+## **👾 How to Install**
+
+1. Make sure to refer to the official [Ciat Lonbarde documentation](https://github.com/pblasser/esp_cafe/tree/main) for details on how to upload firmware.
+2. Download Apple Pi firmware as .zip and remove "-main" from the uncompressed, downloaded folder name.
+3. Open the `esp_cafe_apple_pi.ino` file in the Arduino IDE
+4. Go to Arduino IDE's Tools \-\> Partition Scheme menu and change it to Huge APP (3MB No OTA\/1MB SPIFFS). 
+5. Optional: Go to Arduino IDE's Tools \-\> Erase All Flash Before Sketch Uploadand set it to Enabled. This may be needed to troubleshoot, but if used, make sure to turn back to "disabled" so that tape decks will not be erased.
+6. Check Boot Configuration in the `.ino` file and set as desired.
+7. Setup the preset playlist in the `.ino` file to be loaded as desired.
 
 ## **🍎 Preset Selection Mode**
 
-This firmware contains 24 presets and a new preset selection system to navigate through selected presets in a preset playlist.
+This firmware contains 31 presets and a new preset selection system to navigate through selected presets in a preset playlist.
 
 **How to change presets:**
 
@@ -14,19 +24,32 @@ This firmware contains 24 presets and a new preset selection system to navigate 
    * *Example: 0 presses \= Preset 0 (the first in your playlist). This is your home base preset, just long press twice in a row and you’re back to it. 1 press is the second preset in the list.* *The Lamp will flash the index with each button press to confirm the count.*   
 4. **Load & Exit:** Press and hold the Button again. The Lamp will strobe rapidly. Release the button, and then the selected preset will load, with a frozen buffer if applicable, and resume the audio engine.
 
+**How to save a loop:**
+
+1. **Go to `tape\_deck` preset:** Include `tape\_deck` preset in active playlist and navigate to it.  
+2. **Audition Tape:** `tape\_deck` always starts in slot 1. Patch to earth to hear the current tape slot.  
+3. **Save Tape:** Patch the orange banana at the top of cafe to flip and turn antenna knob down. Touch the bottom gold screw to save buffer into current slot. Lamp will flash rapidly during save.
+4. **Switch tapes:** Press the button the number of times corresponding to your desired tape deck slot index. 
+   * *Example: 0 presses \= Slot 1 (the first tape). *The Lamp will flash the index with each button press to confirm the count.*   
+5. **Load Tape:** Patch orange banana to skip. Touch the bottom gold screw, the Lamp will flash rapidly. Now earth will scrub the load tape.
+6. **Exit:** Long-press the button to enter preset selection, select preset to process the tape. *Note: if earth is left unpatched, this is a way to cue a loop*
+
 ## **🥧 The Presets**
 
-Here is an overview of all 24 included presets and how the hardware maps to their parameters.   
+Here is an overview of all 30 included presets and how the hardware maps to their parameters.   
 *(Note: **you will need a format jumbler** to take full advantage of these.  For example, many presets require Ash to hear the effect.)*
 
 ### **Loopers & Delays**
 
 * **coco\_og**: The original Cocoquantus-style coco. All bananas work as in Cocoquantus, except earth is the record button switch.
 * **coco\_mod**: A version of the coco preset with a few additions. The first difference is that in this version Record mode (Lamp Off) is the boot state, so the buffer automatically overwrites the noise. Earth acts as a record on/off toggle. Yellow outputs a clock pulse (16ppqn). Ash outputs clean audio at half volume.  
+* **window**: From Daniel Fishkin, this preset modulates the length of the buffer without affecting the pitch. It morphs from reverb to delay. Earth modulates the buffer length. Skip and Flip act as in coco. 
+* **splicer**: Inspired by Window, imagine the buffer as a tape that splicer can chop into a smaller pieces. Both the loop start and loop end points can be moved around in the buffer. With nothing patched to EARTH, the loop points are at the buffer's first and last bits (Unplugged = Full Buffer). EARTH without FLIP controls the loop end point. EARTH with FLIP ON controls the loop start point. FLIP is a latching switch. When ON, Earth controls loop start point. If Start > End, loop plays in reverse. SKIP randomizes playhead placement within the splice. BUTTON freezes buffer. ASH is wet audio at line level. YELLOW is end-of-cycle of the loop. Sends a pulse to sync. 
 * **scrambler**: A live stutter/glitch effect utilizing a dual-buffer architecture. The playback buffer is divided into segments. Earth selects the active playback segment. Skip toggles between 16 or 3 segment divisions. Flip enables random skipping between segments. Button freezes the buffer.  
 * **formant**: A vowel filter bank applied to the audio buffer. Earth modulates the vowel tuning.  
 * **external\_sync**: A delay synchronized to an external clock. Good for syncing two cafes. Patch a clock (like a coco clock out, but it could also be irregular) into Skip to quantize the buffer length. Flip reverses the playhead. Earth is a record on/off toggle. Button freezes the buffer (which continues to quantize while frozen).  
 * **phasing**: Records a loop and plays it back with 4 drifting playheads heads. Button toggles between Record/Play modes. Skip triggers a one-shot recording (in Rec mode) or randomizes the playheads (in Play mode). Flip reverses all playhead directions. Earth modulates phase alignment. Yellow is bit-crushed audio. Ash outputs clean audio at half volume.
+* **dissolve**: Slowly disintegrate a loop. While lamp is on, it cuts the live audio every cycle of the loop will drop out more of the audio. While recording with lamp off, it will not write to the buffer in a drop out. EARTH controls the probability of the drop outs. FLIP reverses the playhead. SKIP is shuffle mode that randomly rearranges the buffer. YELLOW is a pulse for every drop out. ASH is audio out
 
 ### **Samplers & Granular**
 
@@ -40,6 +63,7 @@ Here is an overview of all 24 included presets and how the hardware maps to thei
 * **echo\_mod**: A prime-number based delay/reverb with pitch shifting via Speed knob. Earth controls a low-pass filter. Skip switches room sizes (short vs. long primes). Flip reverses playback. Button freezes the buffer. Yellow is bit-crushed audio. Ash is audio at line level.  
 * **reverb\_spring**: An experimental spring reverb tank. Earth controls dampening. Flip is a latching switch for modulation speed (Surf vs. Lush). Skip freezes the buffer momentarily. Button is a latching freeze, during which skip is ignored. Yellow is bit-crushed audio.
 * **reverb\_granular**: A live granular processing mode. Earth controls grain size. Flip pitches the reverb an octave up (Shimmer). Skip momentarily freezes the buffer. Button is a latching freeze, during which skip is ignored. Yellow is bit-crushed audio.
+* **reverb\_feedbacker**: A feedback delay network reverb. Earth controls room size. A feedback delay network reverb. EARTH controls the room size. BUTTON is a feedback mode switch. SKIP is LFO modulation speed. FLIP is reverse reverb. ASH is wet audio out.
 * **resonator**: A 16-band sympathetic resonator. Earth controls the central pitch. Flip switches between Organ and Gong mode. Skip toggles an octave down. Patch audio or press the Button to ping/excite the resonator. Yellow is bit-crushed audio.
 * **harmonizer**: Pitch-tracking harmonizer generating 3 delay taps of over/under tones. Earth controls pitch tracking stability vs. LFO modulation. Flip switches between harmonics and sub-harmonics. Skip switches the prime math. Button parameter-locks all controls. Yellow is a stepped harmonic LFO.
 
@@ -110,6 +134,8 @@ To use one of these lists, type its name into the `#define ACTIVE_PLAYLIST` line
 * **`playlist_ambient`**: Spatial and atmospheric.  
   * *(0) reverb\_spring, (1) echo\_mod, (2) reverb\_granular, (3) drone, (4) phasing*  
 * **`playlist_all`**: Loads all 24 presets sequentially for the complete collection. Recommend against using this unless experienced with navigating the preset selection menu system.
+* ** `playlist_new_stuff`**: coco_mod, tape_deck, dissolve, splicer, window, reverb_feedback
+
 
 ## **💻 Developer API & Macros (stuff.h)**
 
@@ -156,4 +182,12 @@ To prevent memory crashes while changing between 8-bit tape loops and 16-bit syn
 * Fixed DC Offset in Ash for Saturator Preset
 * Plus: External Sync preset modified to sync with another cafe module in coco_mod preset
 * Plus: coco_mod yellow clock out expanded for different PPQN settings
+
+### **Version 2.718**
+* New Preset: Tape Deck, an interface to save and recall loops in persistent memory, even across power cycles
+* Load a tape deck slot during power on instead of noise. Set up in Boot configuration below
+* New Preset: Window from Daniel Fishkin
+* New Preset: Splicer
+* New Preset: Dissolve
+* New Preset: Feedback reverb
 

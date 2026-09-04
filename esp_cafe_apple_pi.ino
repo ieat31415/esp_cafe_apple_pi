@@ -3,7 +3,7 @@
 // ==========================================
 // "Apple Pi" alt Firmware for the CIAT LONBARDE CAFETERIA/CAFE QUANTUM
 //
-// 24 Presets: a mixed bag of effects
+// 31 Presets: a mixed bag of effects
 //
 // by ieat31415
 // playlist of preset demos on my YOUTUBE (youtube.com/@ieat3141592)
@@ -21,6 +21,33 @@
 // Plus: coco_mod expanded to set PPQN
 // ------------------------------------------
 
+// ==========================================
+// CHANGE LOG --- VERSION 2.718
+// ==========================================
+// New Preset: Tape Deck, an interface to save and recall loops in persistent memory, even across power cycles
+// Load a tape deck slot during power on instead of noise. Set up in Boot configuration below
+// New Preset: Windows from Daniel Fishkin
+// New Preset: Splicer
+// New Preset: Dissolve
+// New Preset: Feedback reverb
+// ------------------------------------------
+
+// ============================================================================
+// BOOT CONFIGURATION
+// ============================================================================
+// The original Cocoquantus booted with its delay buffer frozen and filled with noise
+// By default, this firmware boots unfrozen (so the buffer is immediately cleared)
+// 
+// Change this to 'true' if you want the classic Cocoquantus frozen noise boot.
+#define CLASSIC_NOISE_BOOT false
+
+// TAPE SAVE SETUP--- NEW FIRMWARE
+// Pre-load a tape every time cafe boots (if Classic_noise_boost is false)
+#define ENABLE_BOOT_TAPE true // Set to false to start with an empty canvas and drums
+#define BOOT_TAPE_SLOT 1 // Specify which tape slot (1-8) to load at boot
+#define BOOT_TAPE_FROZEN true // Set to true to load the buffer with the tape on boot
+// ============================================================================
+
 //90s cafe, warm tones, friends, extravagant laptop bezels.
 //a coffee cup as big as your head.
 //if arduino was bought by a printer company is this stable?
@@ -28,36 +55,43 @@
 #define BYTECODES t*(t & 16384 ? 7 : 5) * (3 - (3 & t >> 9) + (3 & t >> 8)) >> (3 & -t >> (t & 4096 ? 2 : 16)) | t >> 3;
 
 #include "synths.h"
+#include <LittleFS.h> //for file system needed by tape_deck preset
 
   // ------------------------------------------
   // PRESET MENU
   // ------------------------------------------
 
     //  presets[0] = coco_mod;
-    //  presets[0] = coco_og;
-    //  presets[1] = echo_mod;
-    //  presets[2] = formant;
-    //  presets[3] = flanger;
-    //  presets[4] = karplus;
-    //  presets[5] = resonator;
-    //  presets[6] = reverb_spring;
-    //  presets[7] = reverb_granular;
-    //  presets[8] = harmonizer;
-    //  presets[9] = saturator;
-    //  presets[10] = external_sync;
-    //  presets[11] = scrambler;
-    //  presets[12] = sampler;
-    //  presets[13] = sampler_4x;
-    //  presets[14] = granular;
-    //  presets[15] = phasing;
-    //  presets[16] = bytebeats_mod;
-    //  presets[17] = megabytebeats;
-    //  presets[18] = arcade;
-    //  presets[19] = FX;
-    //  presets[20] = wavetable;
-    //  presets[21] = drone;
-    //  presets[22] = groovebox;
-    //  presets[23] = polyrhythms;
+    //  presets[1] = coco_og;
+    //  presets[2] = echo_mod;
+    //  presets[3] = echo_og;
+    //  presets[4] = formant;
+    //  presets[5] = flanger;
+    //  presets[6] = karplus;
+    //  presets[7] = resonator;
+    //  presets[8] = reverb_spring;
+    //  presets[9] = reverb_granular;
+    //  presets[10] = reverb_feedback;
+    //  presets[11] = harmonizer;
+    //  presets[12] = saturator;
+    //  presets[13] = window;
+    //  presets[14] = splicer; 
+    //  presets[15] = external_sync;
+    //  presets[16] = scrambler;
+    //  presets[17] = sampler;
+    //  presets[18] = sampler_4x;
+    //  presets[19] = granular;
+    //  presets[20] = phasing;
+    //  presets[21] = dissolve;
+    //  presets[22] = bytebeats_mod;
+    //  presets[23] = megabytebeats;
+    //  presets[24] = arcade;
+    //  presets[25] = FX;
+    //  presets[26] = wavetable;
+    //  presets[27] = drone;
+    //  presets[28] = groovebox;
+    //  presets[29] = polyrhythms;
+    //  presets[30] = tape_deck;
 
 // PRESET PLAYLIST DEFINITIONS
 // Define custom preset playlists below 
@@ -74,7 +108,7 @@ void (*playlist_old_school[])() = {
 };
 
 void (*playlist_loopers[])() = {
-    coco_mod, formant, scrambler, sampler, sampler_4x, granular, phasing
+    coco_mod, tape_deck, formant, scrambler, sampler, sampler_4x, granular, phasing, window, splicer, dissolve
 };
 
 // use sync playlist for two cafes where is in coco_mod that will be the leader, setting the main delay time, and the other is in external_sync which will stay in sync no matter its speed knob
@@ -83,11 +117,11 @@ void (*playlist_sync[])() = {
 };
 
 void (*playlist_reverbs[])() = {
-    echo_mod, reverb_spring, reverb_granular
+    echo_mod, reverb_spring, reverb_granular, reverb_feedback
 };
 
 void (*playlist_all_delays[])() = {
-    coco_mod, external_sync, formant, scrambler, sampler, sampler_4x, granular, phasing, echo_mod, reverb_spring, reverb_granular, flanger
+    coco_mod, external_sync, formant, window, splicer, scrambler, sampler, sampler_4x, granular, phasing, echo_mod, reverb_spring, reverb_granular, reverb_feedback, flanger
 };
 
 void (*playlist_live_FX[])() = {
@@ -116,7 +150,7 @@ void (*playlist_ambient[])() = {
 
 // here for reference. will likely crash due to memory fragmentation from the variables across all these presets prevent continguous memory for the buffer.
 void (*playlist_all[])() = {
-    coco_mod, coco_og, echo_og, echo_mod, formant, flanger, karplus, resonator, reverb_spring, reverb_granular, harmonizer, saturator, external_sync, scrambler, sampler, sampler_4x, granular, phasing, bytebeats_mod, megabytebeats, arcade, FX, wavetable, drone, groovebox, polyrhythms
+    coco_mod, coco_og, echo_og, echo_mod, formant, flanger, karplus, resonator, reverb_spring, reverb_granular, reverb_feedback, harmonizer, saturator, external_sync, window, splicer, scrambler, sampler, sampler_4x, granular, phasing, dissolve, tape_deck, bytebeats_mod, megabytebeats, arcade, FX, wavetable, drone, groovebox, polyrhythms
 };
 
 void (*playlist_hello_world[])() = {
@@ -127,22 +161,20 @@ void (*playlist_mono[])() = {
     saturator, reverb_spring, reverb_granular, flanger
 };
 
+void (*playlist_test[])() = {
+    reverb_feedback
+};
+
+void (*playlist_new_stuff[])() = {
+    coco_mod, tape_deck, dissolve, splicer, window, reverb_feedback
+};
 
 // ------------------------------------------
 // PRESET PLAYLIST SELECTION TO LOAD
 // ------------------------------------------
 // Type the name of the playlist you want to load onto the Cafe: <<<<<<<<<<<<<<<<<<<<<<<<<----------
-#define ACTIVE_PLAYLIST playlist_hello_world
+#define ACTIVE_PLAYLIST playlist_new_stuff
 
-// ============================================================================
-// BOOT CONFIGURATION
-// ============================================================================
-// The original Cocoquantus booted with its delay buffer frozen and filled with noise
-// By default, this firmware boots unfrozen (so the buffer is immediately cleared)
-// 
-// Change this to 'true' if you want the classic Cocoquantus frozen noise boot.
-#define CLASSIC_NOISE_BOOT false
-// ============================================================================
 
 
 
@@ -154,6 +186,25 @@ void setup() {
   delay(1000); // Give the serial monitor a moment to connect
   Serial.printf("\n--- BOOT START ---\n");
   Serial.printf("Initial Free Heap: %d bytes\n", ESP.getFreeHeap());
+
+//   if (!LittleFS.begin(true)) {
+//     Serial.println("LittleFS Mount Failed");
+//   }
+
+// --- EXPLICIT FORMAT & MOUNT ---
+  if (!LittleFS.begin(false)) {
+    Serial.println("Mount failed. Formatting LittleFS...");
+    LittleFS.format(); // Explicitly structure the raw flash
+    
+    if (!LittleFS.begin(false)) {
+      Serial.println("LittleFS Mount Failed After Format");
+    } else {
+      Serial.println("LittleFS Formatted and Mounted Successfully");
+    }
+  } else {
+    Serial.println("LittleFS Mounted Successfully");
+  }
+
   Serial.println("[1] Running SETUPPERS (Hardware Init)...");
 
   SETUPPERS
@@ -161,16 +212,52 @@ void setup() {
 
   //theCoolWifiInitiation();
 
-  // STARTUP WITH FREEZE CONFIGURATION
+  // --------------------------------------------------------
+  // BOOT STATE
+  // --------------------------------------------------------
   if (CLASSIC_NOISE_BOOT) {
+    // Noise frozen on startup
+    Serial.println("    -> Booting with Classic Frozen Noise.");
     audio_frozen_state = true;
     lamp = true;
-    FILLNOISE // Load buffer with only noise
-  } else {
+    FILLNOISE
+  } 
+  else if (ENABLE_BOOT_TAPE) {
+    // Tape frozen on startup
+    String boot_filename = "/tape" + String(BOOT_TAPE_SLOT) + ".raw";
+    Serial.printf("    -> Checking for Boot Tape (%s) in Flash...\n", boot_filename.c_str());
+    
+    File boot_file = LittleFS.open(boot_filename, FILE_READ);
+    if (boot_file) {
+        boot_file.read((uint8_t*)delaybuffb, 98304);
+        boot_file.read((uint8_t*)delaybuffa, 98304);
+        boot_file.close();
+        Serial.println("    -> Boot Tape restored to RAM");
+        audio_frozen_state = BOOT_TAPE_FROZEN;
+        lamp = BOOT_TAPE_FROZEN;
+    } else {
+        // Clear buffer on startup
+        Serial.println("    -> Clearing buffer, no tape found.");
+        audio_frozen_state = false;
+        lamp = false;
+        for (int i = 0; i < DELAYSIZE; i++) dellius(i, 0, false);
+        load_drum_kit(0);
+    }
+  } 
+  else {
+    // Clear buffer on startup
+    Serial.println("    -> Clearing buffer.");
     audio_frozen_state = false;
     lamp = false;
-    load_drum_kit(0); // Load drum samples into RAM
+    
+    // Wipe the uninitialized RAM with silence
+    for (int i = 0; i < DELAYSIZE; i++) {
+        dellius(i, 0, false);
+    }
+    
+    load_drum_kit(0); // load drum samples into RAM
   }
+  // --------------------------------------------------------
 
   // Pre-charge Ash Capacitor
   // Needed so ash doesn't need to wake up to send audio
@@ -347,6 +434,25 @@ void loop() {
           tick_timer = 0;
       }
       
+      // Process Autoload instantly while in the menu
+      if (tape_load_flag) {
+          Serial.printf("\n[TAPE DECK] --- AUTOLOAD INITIATED ---\n");
+          REG(I2S_CONF_REG)[0] &= ~(BIT(5)); // Pause audio stream
+          
+          String filename = "/tape" + String(tape_index) + ".raw";
+          File file = LittleFS.open(filename, FILE_READ);
+          if(file) {
+              Serial.printf("[TAPE DECK] Pulling 196KB file into RAM buffers...\n");
+              file.read((uint8_t*)delaybuffb, 98304); 
+              file.read((uint8_t*)delaybuffa, 98304); 
+              file.close();
+          }
+          tape_load_flag = false;
+          
+          REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+          REG(I2S_CONF_REG)[0] |= (BIT(5)); // Resume audio stream
+      }
+
       // Yield to FreeRTOS to prevent watchdog resets
       vTaskDelay(10); 
     }
@@ -359,9 +465,7 @@ void loop() {
 
     Serial.printf("Exiting mode. Loading preset index: %d\n", preset_counter);
 
-    // ==========================================
     // EXIT PRESET SELECTION MODE
-    // ==========================================
     // When done tapping, pause the system for 1 microsecond
     // to format the memory and load the new preset
 
@@ -381,6 +485,58 @@ void loop() {
     REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF; 
     REG(I2S_CONF_REG)[0] |= (BIT(5));     
   }
+
+// --- TAPE DECK SETUP ---
+  if (tape_save_flag) {
+    Serial.printf("\n[TAPE DECK] --- SAVE INITIATED ---\n");
+    Serial.printf("[TAPE DECK] Pausing audio engine...\n");
+    REG(I2S_CONF_REG)[0] &= ~(BIT(5)); // Pause audio stream
+    
+    String filename = "/tape" + String(tape_index) + ".raw";
+    Serial.printf("[TAPE DECK] Opening %s for writing...\n", filename.c_str());
+    
+    File file = LittleFS.open(filename, FILE_WRITE);
+    if(file) {
+        Serial.printf("[TAPE DECK] Burning 196KB RAM buffers to Flash...\n");
+        file.write((const uint8_t*)delaybuffb, 98304); // Write first half
+        file.write((const uint8_t*)delaybuffa, 98304); // Write second half
+        file.close();
+        Serial.printf("[TAPE DECK] Save successful!\n");
+    } else {
+        Serial.printf("[TAPE DECK] ERROR: Failed to open %s for writing\n", filename.c_str());
+    }
+    
+    tape_save_flag = false;
+    Serial.printf("[TAPE DECK] Resuming audio engine...\n");
+    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+    REG(I2S_CONF_REG)[0] |= (BIT(5)); // Resume audio stream
+  }
+
+  if (tape_load_flag) {
+    Serial.printf("\n[TAPE DECK] --- LOAD INITIATED ---\n");
+    Serial.printf("[TAPE DECK] Pausing audio engine...\n");
+    REG(I2S_CONF_REG)[0] &= ~(BIT(5)); // Pause audio stream
+    
+    String filename = "/tape" + String(tape_index) + ".raw";
+    Serial.printf("[TAPE DECK] Locating %s in Flash...\n", filename.c_str());
+    
+    File file = LittleFS.open(filename, FILE_READ);
+    if(file) {
+        Serial.printf("[TAPE DECK] Pulling 196KB file into RAM buffers...\n");
+        file.read((uint8_t*)delaybuffb, 98304); // Load first half
+        file.read((uint8_t*)delaybuffa, 98304); // Load second half
+        file.close();
+        Serial.printf("[TAPE DECK] Load successful!\n");
+    } else {
+        Serial.printf("[TAPE DECK] ERROR: %s is empty or missing. RAM untouched.\n", filename.c_str());
+    }
+    
+    tape_load_flag = false;
+    Serial.printf("[TAPE DECK] Resuming audio engine...\n");
+    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+    REG(I2S_CONF_REG)[0] |= (BIT(5)); // Resume audio stream
+  }
+
   delay(10);
 }
 

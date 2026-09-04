@@ -6855,4 +6855,758 @@ void IRAM_ATTR polyrhythms() {
     REG(I2S_CONF_REG)[0] |= (BIT(5)); 
 }
 
+/////////////////////////////////////////////////////////END//////////////////////////////////////////////////////
+
+
+// ==========================================
+// TAPE DECK - Buffer Save & Load
+// ==========================================
+// Tape Deck, an interface to save and recall loops in persistent memory, even across power cycles.
+// Load a tape deck slot during power on instead of noise. Go to Boot configuration in the .ino file
+// When entering tape deck, it always starts in slot 1.
+// Audition Tape:  Patch to EARTH to hear the current tape slot.  Try patching an antenna or quantum to earth.
+// Save Tape: Patch the orange banana at the top of cafe to FLIP and turn antenna knob down. Touch the bottom gold screw to save buffer into current slot. Lamp will flash rapidly during save.
+// Switch tapes: Press the button the number of times corresponding to your desired tape deck slot index. 
+// Example: 0 presses = Slot 1 (the first tape). The Lamp will flash the index with each button press to confirm the count.*  
+// Load Tape: Patch orange banana to SKIP. Touch the bottom gold screw, the Lamp will flash rapidly. Now earth will scrub the load tape.
+// Exit: Long-press the button to enter preset selection, select preset to process the tape. *Note: if earth is left unpatched, this is a way to cue a loop
+// Ash is clean audio output
+// NOTE: the recording is variable sample rate due to the external CPU clock. 
+// So differences between recording clock speed and playback clock speed will pitch shift
+// It can bit pitch corrected back in coco_mod or another preset 
+
+void IRAM_ATTR tape_deck() {
+    morph_to_8bit(); // Check the RAM state (8 bit or 16 bit (either way they end up in 12 bit))
+
+    static bool was_in_menu = false;
+    static bool last_frozen = false; 
+    
+    // FLip & Skip switch set up
+    static int skip_integrator = 0;
+    static int skip_latch = 0;
+    static int flip_integrator = 0;
+    static int flip_latch = 0;
+    
+    static int blink_counter = 0;
+    static int blink_timer = 0;
+    static bool lamp_state = false;
+    static int io_strobe_timer = 0; 
+
+    int earth_raw = EARTHREAD; 
+
+    // --- WAKE UP & EXIT BLOCK ---
+    if (preset_mode) {
+        if (!was_in_menu) {
+            // AUTOLOAD
+            // Queue the selected tape to load into RAM instantly.
+            tape_load_flag = true; 
+            was_in_menu = true;
+        }
+    } else {
+        if (was_in_menu) {
+            was_in_menu = false;
+            skip_integrator = 0;
+            skip_latch = (SKIPPERAT != 0) ? 1 : 0;
+            flip_integrator = 0;
+            flip_latch = (FLIPPERAT != 0) ? 1 : 0;
+            
+            // Auto-Reset to chosen boot slot
+            tape_index = BOOT_TAPE_SLOT; 
+            
+            // Lamp Feedback
+            blink_counter = tape_index * 2; 
+            blink_timer = -24000; // LAMP DELAY: Wait 0.5 seconds before blinking so it doesn't collide with the menu strobe
+            lamp_state = false;
+            
+            // Sync to OS to prevent immediate triggering upon entry
+            last_frozen = audio_frozen_state;
+        }
+
+        // --- NAVIGATION (via BUTTON) ---
+        if (audio_frozen_state != last_frozen) {
+            last_frozen = audio_frozen_state;
+            
+            tape_index++;
+            if (tape_index > 4) tape_index = 1; // 4 Slots Max but could be pushed to 5
+            blink_counter = tape_index * 2; 
+            blink_timer = 0; 
+            lamp_state = false;
+        }
+
+        // --- SKIP & FLIP ---
+        
+        // SKIP (Load)
+        if (SKIPPERAT) {
+            if (skip_integrator < 2000) skip_integrator += 500; 
+        } else {
+            if (skip_integrator > 0) skip_integrator -= 50; 
+            if (skip_integrator < 0) skip_integrator = 0;
+        }
+
+        if (skip_integrator > 1500) {
+            if (skip_latch == 0) {
+                tape_load_flag = true;
+                io_strobe_timer = 24000;
+                skip_latch = 1;
+            }
+        } else if (skip_integrator < 100) {
+            skip_latch = 0;
+        }
+
+        // FLIP (Save)
+        if (FLIPPERAT) {
+            if (flip_integrator < 2000) flip_integrator += 500; 
+        } else {
+            if (flip_integrator > 0) flip_integrator -= 50; 
+            if (flip_integrator < 0) flip_integrator = 0;
+        }
+
+        if (flip_integrator > 1500) {
+            if (flip_latch == 0) {
+                tape_save_flag = true;
+                io_strobe_timer = 24000;
+                flip_latch = 1;
+            }
+        } else if (flip_integrator < 100) {
+            flip_latch = 0;
+        }
+
+        // --- LAMP FEEDBACK ---
+        if (io_strobe_timer > 0) {
+            io_strobe_timer--;
+            // Strobe rapidly to visually warn that the CPU is busy with Disk I/O
+            if ((io_strobe_timer >> 10) & 1) { LAMP_ON; } else { LAMP_OFF; }
+        } 
+        else if (blink_counter > 0) {
+            blink_timer++;
+            // Blink out the current index at a readable human speed
+            if (blink_timer > 8000) { 
+                lamp_state = !lamp_state;
+                if (lamp_state) { LAMP_ON; } else { LAMP_OFF; }
+                blink_timer = 0;
+                blink_counter--;
+            }
+        } else {
+            LAMP_OFF; // Default to OFF when idling
+        }
+    } 
+
+    // --- AUDITION (VARISPEED PLAYBACK ENGINE via EARTH) ---
+    // Earth knob controls playback speed. (Middle = 1.0x, Min = Paused, Max = 2.0x)
+    static uint32_t play_head_fine = 0;
+    
+    // Scale Earth (0-255) to phase increment. 128 (center) * 32 = 4096 (1.0x speed)
+    uint32_t speed_inc = earth_raw * 32; 
+    
+    play_head_fine += speed_inc;
+    if (play_head_fine >= (131072U << 12)) {
+        play_head_fine -= (131072U << 12); // Dynamic wrap
+    }
+    
+    uint32_t play_head = play_head_fine >> 12;
+    int pout = dellius(play_head, 0, true);
+    
+    DACWRITER(pout);
+    ASHWRITER(pout); 
+}
+
+/////////////////////////////////////////////////////////END//////////////////////////////////////////////////////
+
+
+// ==========================================
+// WINDOW - from Daniel Fishkin
+// ==========================================
+// a modified version of coco that varies the window of the buffer size
+// same as coco_mod, but earth no longer toggles freeze —
+// instead earth continuously and freely sets the delay window size
+// calibrated for Quantum CV (2-6V), same fixed range as sampler()
+// EXPONENTIAL (audio taper) response, not linear
+// yellow is a clock pulse (same as coco_mod)
+// ash is clean audio output at half volume of input
+// button is freeze (same as every other preset)
+
+#define COCO_WINDOW_MAX 131071
+#define COCO_WINDOW_MIN 2000
+
+static const int coco_window_table[17] = {
+  2000, 4176, 7954, 13906, 22448, 33670, 47210, 62261, 77705,
+  92341, 105127, 115364, 122779, 127507, 130005, 130937, 131071
+};
+
+/*
+static const int coco_window_table[17] = {
+  2000, 2598, 3374, 4381, 5690, 7391, 9599, 12466, 16191,
+  21028, 27310, 35470, 46067, 59830, 77705, 100920, 131071
+};
+*/
+
+
+static int coco_window_size = COCO_WINDOW_MAX;
+
+void IRAM_ATTR window() {
+morph_to_8bit(); //needed for buffer translation
+
+ DACWRITER(pout)
+ gyo=ADCREADER
+
+//MODIFIED FIRMWARE
+ int earth_raw = EARTHREAD; // 0-255
+
+ // Fixed Quantum calibration — same constants as sampler()
+ int constrained_earth = earth_raw;
+ if (constrained_earth < 56) constrained_earth = 56;
+ if (constrained_earth > 160) constrained_earth = 160;
+
+ // Rescale 56-160 up to a full 0-255 span
+ int earth_cv = ((constrained_earth - 56) * 255) / (160 - 56);
+
+ // Invert so unplugged (low reading) = MAX window
+ int inv_cv = 255 - earth_cv;
+
+//  int seg = (inv_cv * 16) / 255;
+//  if (seg > 15) seg = 15;
+//  int seg_frac = inv_cv * 16 - (seg * 255);
+
+// Extract the top 4 bits to find the segment (0-15)
+int seg = inv_cv >> 4; 
+
+// Extract the bottom 4 bits to find the fraction (0-15)
+int seg_frac = inv_cv & 0x0F; 
+
+int lo = coco_window_table[seg];
+int hi = coco_window_table[seg + 1];
+
+// Interpolate and divide by 16 using a bit-shift
+int target_window = lo + (((hi - lo) * seg_frac) >> 4);
+
+//  int lo = coco_window_table[seg];
+//  int hi = coco_window_table[seg + 1];
+//  int target_window = lo + (((hi - lo) * seg_frac) / 255);
+
+ if (target_window > COCO_WINDOW_MAX) target_window = COCO_WINDOW_MAX;
+ if (target_window < COCO_WINDOW_MIN) target_window = COCO_WINDOW_MIN;
+
+ coco_window_size += (target_window - coco_window_size) >> 2;
+
+ if (audio_frozen_state) { LAMP_ON; }
+ else { LAMP_OFF; }
+///////////END MODIFIED
+
+ pout=dellius(t,gyo,audio_frozen_state);
+ if (FLIPPERAT) t--;
+ else t++;
+
+ if (t >= coco_window_size) t = 0;
+ if (t < 0) t = coco_window_size - 1;
+
+ if (SKIPPERAT)  {
+  if (lastskp==0) delayskp = t;
+  lastskp = 1;
+ } else {
+  if (lastskp) t=delayskp;
+  lastskp = 0;
+ }
+
+ASHWRITER(pout);
+//ENVELOPE_ASHWRITER(pout);
+
+    if ((t & 0x1FFF) < 2000) {
+        if (t < 8192) { YELLOW_AUDIO(4095); }
+        else { YELLOW_AUDIO(3000); }
+    } else {
+        YELLOW_AUDIO(0);
+    }
+
+ REG(I2S_CONF_REG)[0] &= ~(BIT(5));
+ REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+ REG(I2S_CONF_REG)[0] |= (BIT(5));
+}
+
+/////////////////////////////////////////////////////////END//////////////////////////////////////////////////////
+
+// ==========================================
+// SPLICER
+// ==========================================
+// Inspired by Window
+// Imagine the buffer like a tape that splicer can chopper into a smaller piece
+// Both the loop start and loop end points can be moved around in the buffer
+// With nothing patched to EARTH, the loop points are at the buffer's first and last bits (Unplugged = Full Buffer)
+// EARTH without FLIP controls the loop end point
+// EARTH with FLIP ON controls the loop start point
+// FLIP is a latching switch. When ON, Earth controls loop start point
+// If Start > End, loop plays in reverse
+// SKIP randomizes playhead placement within the splice
+// BUTTON freezes buffer
+// ASH is wet audio at line level
+// YELLOW is end-of-cycle of the loop. Sends a pulse to sync. 
+
+#define SPLICE_MAX_LENGTH 131071
+#define SPLICE_MIN_LENGTH  2000
+
+void IRAM_ATTR splicer() {
+    morph_to_8bit(); // needed for buffer translation
+
+    // LOOP START & END POINTS
+    static int current_start = 0;
+    static int current_end = SPLICE_MAX_LENGTH;
+    static int target_start = 0;
+    static int target_end = SPLICE_MAX_LENGTH;
+    
+    // Earth Slew
+    static int smoothed_earth = 0;
+
+    // SKIP & FLIP
+    static int flip_integrator = 0;
+    static bool prev_flip_stable = false;
+    static bool flip_latched = false;
+    static int skip_integrator = 0;
+    static bool prev_skip_stable = false;
+
+    static bool last_frozen = false;
+
+    // --- WAKE UP BLOCK ---
+    static bool was_in_menu = false;
+    if (preset_mode) {
+        was_in_menu = true;
+    } else if (was_in_menu) {
+        was_in_menu = false;
+        last_frozen = audio_frozen_state;
+        
+        // Sync hardware integrators to resting state
+        bool f_raw = FLIPPERAT;
+        flip_integrator = f_raw ? 300 : 0;
+        prev_flip_stable = f_raw;
+        
+        bool s_raw = SKIPPERAT;
+        skip_integrator = s_raw ? 300 : 0;
+        prev_skip_stable = s_raw;
+    }
+
+    int audio_in = ADCREADER;
+
+    // --- FREEZE SYNC ---
+    if (audio_frozen_state != last_frozen) {
+        last_frozen = audio_frozen_state;
+    }
+
+    // --- HARDWARE CONTROLS ---
+
+    // FLIP (Latching Switch for Start/End Control)
+    bool flip_raw = FLIPPERAT;
+    if (flip_raw) { if (flip_integrator < 300) flip_integrator++; }
+    else          { if (flip_integrator > 0) flip_integrator -= 50; }
+    
+    bool flip_stable = (flip_integrator > 250);
+    if (flip_stable && !prev_flip_stable) {
+        flip_latched = !flip_latched;
+    }
+    prev_flip_stable = flip_stable;
+
+    // SKIP (Randomize Playhead Trigger)
+    bool skip_raw = SKIPPERAT;
+    if (skip_raw) { if (skip_integrator < 2000) skip_integrator += 500; } // Fast charge for triggers
+    else          { if (skip_integrator > 0) skip_integrator -= 50; }
+    
+    bool skip_stable = (skip_integrator > 1500);
+    bool jump_triggered = (skip_stable && !prev_skip_stable);
+    prev_skip_stable = skip_stable;
+
+    // --- EARTH MAPPING ---
+    int earth_raw = EARTHREAD; 
+    smoothed_earth += (earth_raw - smoothed_earth) >> 4;
+
+    int constrained_earth = smoothed_earth;
+    if (constrained_earth < 56) constrained_earth = 56;
+    if (constrained_earth > 160) constrained_earth = 160;
+
+    // EARTH 8-bit Scale
+    int earth_cv = ((constrained_earth - 56) * 628) >> 8; 
+
+    if (!flip_latched) {
+        // UNLATCHED: Earth controls END point
+        // Unplugged (0) = 255. 255 * 514 = ~131070 (Full Buffer)
+        int inv_cv = 255 - earth_cv;
+        target_end = (inv_cv * 514);
+    } else {
+        // LATCHED: Earth controls START point
+        // Unplugged (0) = 0 (Starts at beginning)
+        target_start = (earth_cv * 514); 
+    }
+
+    // Slew for the boundaries
+    current_start += (target_start - current_start) >> 6;
+    current_end += (target_end - current_end) >> 6;
+
+    // --- REVERSE DETECTOR ---
+    int actual_start = current_start;
+    int actual_end = current_end;
+    bool is_reverse = false;
+
+    // Fold time if Start crosses End
+    if (actual_start > actual_end) {
+        actual_start = current_end;
+        actual_end = current_start;
+        is_reverse = true;
+    }
+
+    // Minimum splice length to prevent crashes
+    int window_size = actual_end - actual_start;
+    if (window_size < SPLICE_MIN_LENGTH) {
+        window_size = SPLICE_MIN_LENGTH;
+        if (actual_start + SPLICE_MIN_LENGTH < SPLICE_MAX_LENGTH) {
+            actual_end = actual_start + SPLICE_MIN_LENGTH;
+        } else {
+            actual_start = actual_end - SPLICE_MIN_LENGTH;
+        }
+    }
+
+    // --- PLAYHEAD MOVEMENT ---
+    if (jump_triggered) {
+        // Random placement scaled exactly to the window size
+        uint32_t r = rand() & 0xFFFF; // 0 to 65535
+        int offset = (r * window_size) >> 16;
+        t = actual_start + offset;
+    } else {
+        if (is_reverse) t--;
+        else t++;
+    }
+
+    // Loop Wrapping
+    if (t >= actual_end) t = actual_start;
+    if (t < actual_start) t = actual_end - 1;
+
+    // --- AUDIO I/O ---
+    pout = dellius(t, audio_in, audio_frozen_state);
+    
+    if (audio_frozen_state) { LAMP_ON; }
+    else { LAMP_OFF; } 
+
+    DACWRITER(pout);
+    ASHWRITER(pout);
+
+    // --- YELLOW SYNC PULSE ---
+    // Pulses when the playhead resets
+    int t_relative = t - actual_start;
+    if (t_relative < 0) t_relative = -t_relative;
+    
+    if (t_relative < 2000) {
+        if (t_relative < (window_size >> 4)) { YELLOW_AUDIO(4095); }
+        else { YELLOW_AUDIO(3000); }
+    } else {
+        YELLOW_AUDIO(0);
+    }
+
+    REG(I2S_CONF_REG)[0] &= ~(BIT(5));
+    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+    REG(I2S_CONF_REG)[0] |= (BIT(5));
+}
+
+/////////////////////////////////////////////////////////END//////////////////////////////////////////////////////
+
+// ==========================================
+// FEEDBACK REVERB
+// ==========================================
+// A feedback delay network reverb
+// EARTH controls the room size
+// BUTTON is a feedback mode switch
+// SKIP is LFO modulation speed
+// FLIP is reverse reverb
+// ASH is wet audio out
+
+void IRAM_ATTR reverb_feedback() {
+    
+    if (current_buffer_owner != 6) {
+        morph_to_16bit(6, 6996); 
+    }
+
+    // --- WAKE-UP BLOCK ---
+    static bool was_in_menu = false;
+    if (preset_mode) {
+        was_in_menu = true;
+        return;
+    } else if (was_in_menu) {
+        was_in_menu = false;
+    }
+
+    // POINTERS TO SHARED BUFFER
+    #define L0 1031
+    #define L1 1543
+    #define L2 2111
+    #define L3 2311
+
+    int16_t* dl0 = &buffer_16bit[0];
+    int16_t* dl1 = &buffer_16bit[L0];
+    int16_t* dl2 = &buffer_16bit[L0 + L1];
+    int16_t* dl3 = &buffer_16bit[L0 + L1 + L2];
+    
+    static int p0 = 0, p1 = 0, p2 = 0, p3 = 0;
+    static int32_t lpf0 = 0, lpf1 = 0, lpf2 = 0, lpf3 = 0;
+
+    // ADC READ & DC BLOCKER
+    int adc_val = ADCREADER;
+    static int32_t dc_tracker = 2048 << 6;
+    dc_tracker += (adc_val - (dc_tracker >> 6));
+    int raw_in = adc_val - (dc_tracker >> 6); 
+    
+    // 1.5x input boost
+    raw_in = (raw_in * 3) >> 1; 
+
+    // EARTH AUTO-CALIBRATION 
+    static int cal_min = 4095; 
+    static int cal_max = 0; 
+    static bool knob_moved = false;
+    static int initial_earth = 0;
+    static int s_earth = -1;
+    static int boot_timer = 0;
+
+    REG(APB_SARADC_SAR1_PATT_TAB1_REG)[0] = (0x0C<<24) | (0x6C<<16);
+    uint32_t fifo_data = REG(I2S_FIFO_RD_REG)[0];
+    int channel = (fifo_data >> 12) & 0xF; 
+    int value   = (fifo_data & 0xFFF);     
+    
+    if (channel == 0) {
+        if (s_earth == -1) s_earth = value;
+        else s_earth += (value - s_earth) >> 4; 
+    }
+
+    if (boot_timer < 2000) {
+        boot_timer++;
+        initial_earth = s_earth;
+    }
+
+    if (!knob_moved && boot_timer >= 2000) {
+        int drift = s_earth - initial_earth;
+        if (drift < 0) drift = -drift;
+        if (drift > 300) knob_moved = true; 
+    }
+
+    if (knob_moved) {
+        if (s_earth < cal_min) cal_min = s_earth;
+        if (s_earth > cal_max) cal_max = s_earth;
+    } else {
+        cal_min = initial_earth;
+        cal_max = initial_earth;
+    }
+
+    int range = cal_max - cal_min;
+    if (range < 50) range = 50;
+    int reading = s_earth - cal_min;
+    if (reading < 0) reading = 0;
+    
+    int earth_cal = (reading * 255) / range;
+    if (!knob_moved) earth_cal = 0; 
+    
+    // GAIN & FEEDBACK SWELL LOGIC
+    int32_t target_fb = ((255 - earth_cal) * 240) >> 8;
+
+    if (audio_frozen_state) {
+        // Button acts as a 100% Feedback Swell switch
+        target_fb = 256; 
+        LAMP_ON;
+    } else {
+        LAMP_OFF;
+    }
+
+    // SLEW LIMITER (for envelope)
+    static int32_t fb_fine = 0;
+    int32_t target_fine = target_fb << 16;
+    int32_t diff = target_fine - fb_fine;
+    
+    if (diff > -8192 && diff < 8192) {
+        fb_fine = target_fine;
+    } else {
+        fb_fine += diff >> 13; 
+    }
+    
+    int32_t fb_gain = fb_fine >> 16;
+
+    // LFO MODULATION & SKIP
+    static int lfo_phase = 0;
+    static int lfo_dir = 1;
+    
+    // Skip multiplies LFO speed by 4x without breaking the depth shift!
+    int lfo_speed = SKIPPERAT ? 32 : 8; 
+    lfo_phase += lfo_dir * lfo_speed; 
+    
+    if (lfo_phase > 40960) lfo_dir = -1; 
+    if (lfo_phase < 0) lfo_dir = 1;
+
+    int offset = lfo_phase >> 12;     
+    int frac = lfo_phase & 0xFFF;     
+
+    // READ DELAY LINES
+    int idx0_a = p0 - offset;
+    if (idx0_a < 0) idx0_a += L0;
+    int idx0_b = idx0_a - 1;
+    if (idx0_b < 0) idx0_b += L0;
+    int32_t d0 = ((dl0[idx0_a] * (4096 - frac)) + (dl0[idx0_b] * frac)) >> 12;
+
+    int idx1_a = p1 - (10 - offset);
+    if (idx1_a < 0) idx1_a += L1;
+    int idx1_b = idx1_a - 1;
+    if (idx1_b < 0) idx1_b += L1;
+    int32_t d1 = ((dl1[idx1_a] * frac) + (dl1[idx1_b] * (4096 - frac))) >> 12;
+
+    int32_t d2 = dl2[p2];
+    int32_t d3 = dl3[p3];
+
+    // 4x4 HADAMARD MATRIX
+    int32_t h0 = (d0 + d1 + d2 + d3) >> 1;
+    int32_t h1 = (d0 - d1 + d2 - d3) >> 1;
+    int32_t h2 = (d0 + d1 - d2 - d3) >> 1;
+    int32_t h3 = (d0 - d1 - d2 + d3) >> 1;
+
+    // DAMPENING
+    lpf0 += (h0 - lpf0) >> 2;
+    lpf1 += (h1 - lpf1) >> 2;
+    lpf2 += (h2 - lpf2) >> 2;
+    lpf3 += (h3 - lpf3) >> 2;
+
+    // WRITE BACK
+    int32_t in0 =  raw_in + ((lpf0 * fb_gain) >> 8);
+    int32_t in1 = -raw_in + ((lpf1 * fb_gain) >> 8);
+    int32_t in2 =  raw_in + ((lpf2 * fb_gain) >> 8);
+    int32_t in3 = -raw_in + ((lpf3 * fb_gain) >> 8);
+
+    if (in0 > 32700) in0 = 32700; else if (in0 < -32700) in0 = -32700;
+    if (in1 > 32700) in1 = 32700; else if (in1 < -32700) in1 = -32700;
+    if (in2 > 32700) in2 = 32700; else if (in2 < -32700) in2 = -32700;
+    if (in3 > 32700) in3 = 32700; else if (in3 < -32700) in3 = -32700;
+
+    dl0[p0] = in0;
+    dl1[p1] = in1;
+    dl2[p2] = in2;
+    dl3[p3] = in3;
+
+    // ADVANCE POINTERS (FLIP = REVERSE REVERB)
+    if (FLIPPERAT) {
+        if (--p0 < 0) p0 = L0 - 1;
+        if (--p1 < 0) p1 = L1 - 1;
+        if (--p2 < 0) p2 = L2 - 1;
+        if (--p3 < 0) p3 = L3 - 1;
+    } else {
+        if (++p0 >= L0) p0 = 0;
+        if (++p1 >= L1) p1 = 0;
+        if (++p2 >= L2) p2 = 0;
+        if (++p3 >= L3) p3 = 0;
+    }
+
+    // AUDIO OUT
+    int32_t mix_out = (d0 - d1 + d2 - d3) >> 1; 
+    
+    // Mix the dry signal back in
+    mix_out = raw_in + mix_out;
+
+    // limiters
+    if (mix_out > 2000) mix_out = 2000;
+    if (mix_out < -2000) mix_out = -2000;
+
+    int pout = mix_out + 2048;
+    if (pout > 4095) pout = 4095;
+    if (pout < 0) pout = 0;
+
+    DACWRITER(pout);
+    ASHWRITER(pout);
+}
+
+
+/////////////////////////////////////////////////////////END//////////////////////////////////////////////////////
+
+
+// ==========================================
+// DISSOLVE
+// ==========================================
+// Slowly disintegrates a loop
+// While lamp is on, it cuts the live audio every cycle of the loop will drop out more of the audio
+// While recording with lamp off, it will not write to the buffer in a drop out
+// EARTH controls the probability of the drop outs
+// FLIP reverses the playhead
+// SKIP is shuffle mode that randomly rearranges the buffer
+// YELLOW is a pulse for every drop out
+// ASH is audio out
+
+void IRAM_ATTR dissolve() {
+    
+    morph_to_8bit(); 
+
+    // --- STATIC ENGINE VARIABLES ---
+    static bool was_in_menu = false;
+    static int gyo = 2048;
+    static bool force_write = false;
+
+    // --- WAKE UP ---
+    if (preset_mode) {
+        was_in_menu = true;
+    } else {
+        if (was_in_menu) {
+            was_in_menu = false;
+        }
+
+        int raw_in = ADCREADER;
+        int earth_cv = EARTHREAD; 
+
+        // --- DROPOUT STATES ---
+        static int dropout_timer = 0;
+        bool is_dropping = false;
+        
+        // Playhead for Buffer Shuffle
+        static uint32_t shuffle_t = 0; 
+
+        if (dropout_timer > 0) {
+            is_dropping = true;
+            dropout_timer--;
+        } else {
+            // Earth knob controls dropout probability 
+            if ((rand() & 32767) < (earth_cv >> 3)) {
+                dropout_timer = 480 + (rand() % 6720); // Drop out for 10ms to 150ms
+                shuffle_t = rand() & 0x1FFFF; 
+            }
+        }
+
+        // FREEZE STATE
+        if (audio_frozen_state) {
+            LAMP_ON;
+            force_write = false; 
+        } else {
+            LAMP_OFF;
+            force_write = true;
+            gyo = raw_in;
+        }
+
+        // --- YELLOW GATE OUTPUT ---
+        if (is_dropping) {
+            YELLOW_PULSE(4095); // Fires a 3.3V clock pulse
+        } else {
+            YELLOW_PULSE(0);
+        }
+
+        // --- DISINTEGRATE---
+        if (is_dropping) {
+            force_write = true; 
+            
+            if (SKIPPERAT) {
+                // BUFFER SHUFFLE (when Skip high)
+                gyo = dellius(shuffle_t, 2048, true); 
+                
+                if (FLIPPERAT) shuffle_t--; else shuffle_t++;
+                shuffle_t &= 0x1FFFF;
+
+            } else {
+                // DISINTEGRATION
+                gyo = 2048 + ((rand() & 31) - 16); 
+            }
+        }
+    } 
+
+    // --- AUDIO ---
+    int pout = dellius(t, gyo, !force_write);
+
+    // ADVANCE PLAYHEAD
+    if (FLIPPERAT) t--; else t++;
+    t &= 0x1FFFF; 
+
+    // --- OUTPUTS ---
+    DACWRITER(pout);
+    ASHWRITER(pout);
+}
 
