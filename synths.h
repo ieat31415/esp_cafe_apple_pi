@@ -7342,14 +7342,11 @@ void IRAM_ATTR reverb_feedback() {
     static int p0 = 0, p1 = 0, p2 = 0, p3 = 0;
     static int32_t lpf0 = 0, lpf1 = 0, lpf2 = 0, lpf3 = 0;
 
-    // ADC READ & DC BLOCKER
+    // ADC READ & DC BLOCKER 
     int adc_val = ADCREADER;
     static int32_t dc_tracker = 2048 << 6;
     dc_tracker += (adc_val - (dc_tracker >> 6));
-    int raw_in = adc_val - (dc_tracker >> 6); 
-    
-    // 1.5x input boost
-    raw_in = (raw_in * 3) >> 1; 
+    int raw_in = adc_val - (dc_tracker >> 6);
 
     // EARTH AUTO-CALIBRATION 
     static int cal_min = 4095; 
@@ -7427,9 +7424,14 @@ void IRAM_ATTR reverb_feedback() {
     // Skip multiplies LFO speed by 4x without breaking the depth shift!
     int lfo_speed = SKIPPERAT ? 32 : 8; 
     lfo_phase += lfo_dir * lfo_speed; 
-    
-    if (lfo_phase > 40960) lfo_dir = -1; 
-    if (lfo_phase < 0) lfo_dir = 1;
+
+    if (lfo_phase > 40960) {
+    lfo_phase = 40960;
+    lfo_dir = -1;
+    } else if (lfo_phase < 0) {
+    lfo_phase = 0;
+    lfo_dir = 1;
+    }
 
     int offset = lfo_phase >> 12;     
     int frac = lfo_phase & 0xFFF;     
