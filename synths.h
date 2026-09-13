@@ -82,6 +82,7 @@ morph_to_8bit(); //needed for buffer translation
 
 // --- WAKE UP & BOOT SYNC ---
     static bool is_first_run = true;
+    static bool last_frozen = false; //added memory state
     if (is_first_run) {
         is_first_run = false;
         // Pre-read the Earth knob to anchor the state without toggling the lamp
@@ -107,6 +108,16 @@ morph_to_8bit(); //needed for buffer translation
  else { 
      if (earth_cv < TRIGGER_OFF_THRESHOLD) {
          earth_last_state = 0; 
+     }
+ }
+
+ // CROSSFADE
+ // Added as per Peter's crossfade
+ //  This turns on the crossfade for the Button or Earth
+ if (audio_frozen_state != last_frozen) {
+     last_frozen = audio_frozen_state;
+     if (audio_frozen_state) {
+         TRIGGER_CROSSFADE
      }
  }
 
@@ -182,6 +193,7 @@ morph_to_8bit(); //needed for buffer translation
 
 // --- WAKE UP & BOOT SYNC ---
     static bool is_first_run = true;
+    static bool last_frozen = false;
     if (is_first_run) {
         is_first_run = false;
         // Pre-read the Earth knob to anchor the state without toggling the lamp
@@ -199,8 +211,6 @@ morph_to_8bit(); //needed for buffer translation
      if (earth_cv > TRIGGER_ON_THRESHOLD) {
          lamp = !lamp; 
          audio_frozen_state = lamp;
-        //  if (lamp) REG(GPIO_OUT1_W1TS_REG)[0] = BIT(1); //TO BE REPLACED BELOW FOR BUFFER TRANSFER
-        //  else REG(GPIO_OUT1_W1TC_REG)[0] = BIT(1); 
         if (lamp) { LAMP_ON; } 
         else { LAMP_OFF; }
          earth_last_state = 1; 
@@ -212,6 +222,15 @@ morph_to_8bit(); //needed for buffer translation
      }
  }
 
+ // CROSSFADE
+ // Added as per Peter's crossfade
+ //  This turns on the crossfade for the Button or Earth
+ if (audio_frozen_state != last_frozen) {
+     last_frozen = audio_frozen_state;
+     if (audio_frozen_state) {
+         TRIGGER_CROSSFADE
+     }
+ }
 
  pout=dellius(t,gyo,audio_frozen_state); //disabing lamp during preset selection to allow buffer transfer
  if (FLIPPERAT) t--; //inverted to make work with sampler based presets
@@ -267,6 +286,7 @@ void IRAM_ATTR echo_og() {
 
 // --- WAKE UP & BOOT SYNC ---
     static bool is_first_run = true;
+    static bool last_frozen = false;
     static bool prev_skip = false; // Memory for our edge detector
 
     if (is_first_run) {
@@ -294,6 +314,16 @@ void IRAM_ATTR echo_og() {
  else { 
      if (earth_cv < TRIGGER_OFF_THRESHOLD) {
          earth_last_state = 0; 
+     }
+ }
+
+  // CROSSFADE
+ // Added as per Peter's crossfade
+ //  This turns on the crossfade for the Button or Earth
+ if (audio_frozen_state != last_frozen) {
+     last_frozen = audio_frozen_state;
+     if (audio_frozen_state) {
+         TRIGGER_CROSSFADE
      }
  }
 
@@ -2452,13 +2482,15 @@ void IRAM_ATTR external_sync() {
         is_frozen = audio_frozen_state; 
         skip_integrator = 0;
         tail_active = false;
-        fade_state = 0; // Reset start/stop fades
+        fade_state = 0; 
 
-        // Initialize to full phrase length
-        sync_head = 0;
-        sync_head_fine = 0;
+        // Inherit the global playhead 't' to prevent clicks
+        sync_head = t & 0x1FFFF; // Force within 131071
+        if (sync_head >= current_buffer_len) sync_head = 0;
+        
+        sync_head_fine = sync_head << 12;
 
-        virtual_t_fine = 0;
+        virtual_t_fine = sync_head_fine;
         virtual_inc = 4096;
 
         head_inc = 4096;
@@ -2508,7 +2540,7 @@ void IRAM_ATTR external_sync() {
     if (is_frozen) { LAMP_ON; } 
     else           { LAMP_OFF; }
 
-    // 2. EARTH SMOOTHING
+    // EARTH SMOOTHING
     sync_earth_lpf += (earth_raw - sync_earth_lpf) >> 5; 
 
     // ============================
@@ -2567,14 +2599,11 @@ void IRAM_ATTR external_sync() {
                 
                 if (diff > 10) {
                     tail_active = true;
-                    tail_timer = 2000; 
+                    tail_timer = 4000; 
                     tail_buffer_len = current_buffer_len; 
                     
-                    int offset = (sync_earth_lpf * 32); 
-                    tail_pos = sync_head - offset; 
-                    while (tail_pos < 0) tail_pos += tail_buffer_len;
-                    while (tail_pos >= tail_buffer_len) tail_pos -= tail_buffer_len;
-                    tail_pos_fine = tail_pos << 12;
+                    // Keep playing from where the playhead was before the jump
+                    tail_pos = sync_head;
                     
                     sync_loop_len = new_loop_len; 
                 }
@@ -2630,13 +2659,42 @@ void IRAM_ATTR external_sync() {
     int32_t frac = sync_head_fine & 0xFFF;
     int16_t delayed_sample = (int16_t)(((val_a * (4096 - frac)) + (val_b * frac)) >> 12);
 
-    // --- APPLY CROSSFADE ---
+    // --- CROSSFADE  ---
+    
+    sync_tape_lpf += (ac_in - sync_tape_lpf) >> 2;
+    int16_t new_audio = (int16_t)sync_tape_lpf; // Live input
+    int16_t old_audio = (int16_t)(dellius(sync_head, 0, true) - 2048); // Standard loop playback
+    int16_t final_write_mix = new_audio; 
+
+    // A. HANDLE BUTTON FREEZE FADES (Pre/Post Roll)
+    if (fade_state == 1 && fade_timer_btn > 0) {
+        final_write_mix = (int16_t)(((new_audio * fade_timer_btn) + (old_audio * (4000 - fade_timer_btn))) / 4000);
+        fade_timer_btn--;
+        if (fade_timer_btn <= 0) fade_state = 0;
+    } 
+    else if (fade_state == 2 && fade_timer_btn > 0) {
+        final_write_mix = (int16_t)(((new_audio * (4000 - fade_timer_btn)) + (old_audio * fade_timer_btn)) / 4000);
+        fade_timer_btn--;
+        if (fade_timer_btn <= 0) fade_state = 0;
+    } 
+    else {
+        final_write_mix = new_audio;
+    }
+
+    // HANDLE CLOCK JUMP CROSSFADE
     if (tail_active) {
-        int32_t t_samp = (int32_t)(dellius(tail_pos, 0, true) - 2048);
-        int32_t d_samp = delayed_sample;
+        int32_t t_samp = (int32_t)(dellius(tail_pos, 0, true) - 2048); // The ghost of the old playhead
         
-        // Linear crossfade
-        delayed_sample = (int16_t)(((t_samp * tail_timer) + (d_samp * (4000 - tail_timer))) / 4000);
+        // If frozen, blend the two playback heads.
+        // If live, blend the ghost head into the live recording
+        int32_t target_mix = is_frozen ? delayed_sample : final_write_mix;
+        
+        // Execute the crossfade
+        int16_t jump_mix = (int16_t)(((t_samp * tail_timer) + (target_mix * (4000 - tail_timer))) / 4000);
+        
+        // Send the smoothed result to BOTH the speakers and the tape
+        delayed_sample = jump_mix;
+        final_write_mix = jump_mix;
         
         // Advance the tail playhead
         if (FLIPPERAT) tail_pos--; else tail_pos++;
@@ -2646,36 +2704,19 @@ void IRAM_ATTR external_sync() {
         tail_timer--;
         if (tail_timer <= 0) tail_active = false;
     }
-    
-    // Write if not frozen OR recording crossfade tail
-    if (!is_frozen || fade_state == 1) {
-        sync_tape_lpf += (ac_in - sync_tape_lpf) >> 2;
-        int16_t new_audio = (int16_t)sync_tape_lpf;
-        int16_t old_audio = (int16_t)(dellius(sync_head, 0, true) - 2048);
-        int16_t final_mix = new_audio;
-        
-        if (fade_state == 1 && fade_timer_btn > 0) {
-            // Freezing (Post-roll): Fade from Live down to Loop
-            final_mix = (int16_t)(((new_audio * fade_timer_btn) + (old_audio * (4000 - fade_timer_btn))) / 4000);
-            fade_timer_btn--;
-            if (fade_timer_btn <= 0) fade_state = 0;
-        } 
-        else if (fade_state == 2 && fade_timer_btn > 0) {
-            // Unfreezing (Pre-roll): Fade from Loop up to Live
-            final_mix = (int16_t)(((new_audio * (4000 - fade_timer_btn)) + (old_audio * fade_timer_btn)) / 4000);
-            fade_timer_btn--;
-            if (fade_timer_btn <= 0) fade_state = 0;
-        } 
-        else {
-            // live overwrite
-            final_mix = new_audio;
-        }
 
-        // Convert Signed AC back to Unsigned DC and Write
-        int write_val = final_mix + 2048;
+    // WRITE TO TAPE
+    // Only write if we are live OR if a fade is actively occurring
+    if (!is_frozen || fade_state == 1 || tail_active) {
+        int write_val = final_write_mix + 2048;
         if (write_val > 4095) write_val = 4095;
         if (write_val < 0) write_val = 0;
+        
+        // Force write bypassing OS freeze checks
         dellius(sync_head, write_val, false);
+    } else {
+        // Read-only to keep the tape spinning
+        dellius(sync_head, 2048, true); 
     }
 
     // --- FRACTIONAL PLAYHEAD ADVANCE ---
@@ -7045,6 +7086,7 @@ static int coco_window_size = COCO_WINDOW_MAX;
 
 void IRAM_ATTR window() {
 morph_to_8bit(); //needed for buffer translation
+static bool last_frozen = false; //needed for crossfade
 
  DACWRITER(pout)
  gyo=ADCREADER
@@ -7063,10 +7105,6 @@ morph_to_8bit(); //needed for buffer translation
  // Invert so unplugged (low reading) = MAX window
  int inv_cv = 255 - earth_cv;
 
-//  int seg = (inv_cv * 16) / 255;
-//  if (seg > 15) seg = 15;
-//  int seg_frac = inv_cv * 16 - (seg * 255);
-
 // Extract the top 4 bits to find the segment (0-15)
 int seg = inv_cv >> 4; 
 
@@ -7079,14 +7117,18 @@ int hi = coco_window_table[seg + 1];
 // Interpolate and divide by 16 using a bit-shift
 int target_window = lo + (((hi - lo) * seg_frac) >> 4);
 
-//  int lo = coco_window_table[seg];
-//  int hi = coco_window_table[seg + 1];
-//  int target_window = lo + (((hi - lo) * seg_frac) / 255);
-
  if (target_window > COCO_WINDOW_MAX) target_window = COCO_WINDOW_MAX;
  if (target_window < COCO_WINDOW_MIN) target_window = COCO_WINDOW_MIN;
 
  coco_window_size += (target_window - coco_window_size) >> 2;
+
+// Crossfade added as per peter's update
+if (audio_frozen_state != last_frozen) {
+    last_frozen = audio_frozen_state;
+    if (audio_frozen_state) {
+        TRIGGER_CROSSFADE
+    }
+}
 
  if (audio_frozen_state) { LAMP_ON; }
  else { LAMP_OFF; }
@@ -7187,6 +7229,9 @@ void IRAM_ATTR splicer() {
     // --- FREEZE SYNC ---
     if (audio_frozen_state != last_frozen) {
         last_frozen = audio_frozen_state;
+        if (audio_frozen_state) { //Start crossfade
+            TRIGGER_CROSSFADE
+        }
     }
 
     // --- HARDWARE CONTROLS ---

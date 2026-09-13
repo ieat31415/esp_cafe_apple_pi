@@ -30,6 +30,7 @@
 // New Preset: Splicer
 // New Preset: Dissolve
 // New Preset: Feedback reverb
+// Added Crossfade from Peter's Firmware
 // ------------------------------------------
 
 // ============================================================================

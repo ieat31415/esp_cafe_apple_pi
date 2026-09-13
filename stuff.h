@@ -54,6 +54,10 @@ static int offset = 0;
 #define BUTTON_PRESSED (is_pressed && !preset_mode) //NEW FIRMWARE
 // ---------------------------------------------------------
 
+// CROSSFADE to be called by presets to avoid clicks on loops. Added per Peter's crossfade update
+#define TRIGGER_CROSSFADE \
+    if (xfado == 0) xfado = CROSSFADE;
+
 #define PRESETTER(p) attachInterrupt(2, p, FALLING);
 
 // =========================================================
@@ -87,6 +91,20 @@ bool lamp; // declare the lamp variable for lampaflip
 #define LAMPAFLIP \
   lamp = !lamp; \
   LAMPLIGHT
+
+// --- CROSSFADE CONSTANTS ---  Added as per Peter's crossfade update
+// Peter defaults the Crossbite to 8
+// At base clockrate of 48kHz a countdown of 256 (2^8 = 256) is a 5.3 millisecond crossfade. 
+// Increasing this by one doubles the crossfade time or vice versa.
+// For seemless crossfades of lower pitch audio, the wave cycle can be > 30ms (for C1)
+// Setting Crossbite to 10 is a 21ms crossfade at base CPU speed
+// The CPU speed controls the crossfade time, so slower clock speeds will have slower fade times
+// If the CPU speed is set faster, then the crossfade time will be shorter 
+// but either way the number of samples is the same, so the fade has the same effect
+// Set to -1 for no crossfade, this cancels out the crossfade
+#define CROSSBITE 8  // Change this for longer/shorter crossfades
+#define CROSSFADE (1<<(CROSSBITE)) 
+int xfado = 0;  // countdown timer
 // ---------------------------------------------------------
 
 
@@ -457,7 +475,7 @@ volatile bool audio_frozen_state = false; // <-- ADD THIS LINE
 
 void IRAM_ATTR doubleclicker() {
   int buttnow = BUTTONEST; // 0 is pressed, 1 is released
-  
+
   // Force timer update and read the lower 32 bits
   REG(TIMG0_T0UPDATE_REG)[0] = BIT(1); 
   uint32_t current_time = REG(TIMG0_T0LO_REG)[0]; 
@@ -524,11 +542,7 @@ uint8_t *delaybuffb;
 // Needed for resolution on audio computations
 // 60KB shared memory pool for 16-bit delay and reverb presets
 // Presets check 'current_16bit_owner' and wipe the buffer if they are newly loaded.
-// #define SHARED_16BIT_LEN 30000
-// int16_t buffer_16bit[SHARED_16BIT_LEN];
-// int current_16bit_owner = -1;
 #define SHARED_16BIT_LEN 30000
-// int current_16bit_owner = -1; removing to allow buffer transfer between presets
 
 // Cast the 8-bit delaybuffa array into a 16-bit array
 // 131,072 bytes of 8-bit audio equals 65,536 slots of 16-bit audio.
@@ -555,9 +569,22 @@ int dellius(int ptr, int val, bool but) {
   ptr = ptr * 3;
   biz = ptr & 1;
   forsh = biz << 2;
+
+  // unpack buffer audio
   zut = delptr[(ptr >> 1) + biz] << 4;
   zut |= (delptr[(ptr >> 1) + 1 - biz] & (0xF << (forsh))) >> (forsh);
-  if (!but) {
+
+  // When button is pressed, keeping recording during crossfade time
+  if ((!but) || (but && (xfado > 0))) {
+
+    // Linear Crossfade of the live signal and the buffer 
+    if (xfado > 0) {   
+        val = (val * xfado) >> CROSSBITE;   
+        val += (zut * (CROSSFADE - xfado)) >> CROSSBITE;      
+        xfado--;  
+    }
+
+    // re-pack the buffer to 12 bits by splitting the second byte of the 12bit read input across the end of each 8 bit buffer
     delptr[(ptr >> 1) + biz] = (uint8_t)(val >> 4);
     delptr[(ptr >> 1) + 1 - biz] &= (uint8_t)(0xF << (4 - forsh));
     delptr[(ptr >> 1) + 1 - biz] |= (uint8_t)((val & 0xF) << forsh);
@@ -611,9 +638,7 @@ void initDEL() {
 
   delptr = delaybuffa;
   t = 0;
-
-  delptr = delaybuffa;
-  t = 0;
+  xfado = 0; // initialize crossfade timer. added per peter's crossfade
 
   //esp_task_wdt_init(30, false);
 

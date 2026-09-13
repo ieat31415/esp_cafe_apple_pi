@@ -134,7 +134,7 @@ To use one of these lists, type its name into the `#define ACTIVE_PLAYLIST` line
 * **`playlist_ambient`**: Spatial and atmospheric.  
   * *(0) reverb\_spring, (1) echo\_mod, (2) reverb\_granular, (3) drone, (4) phasing*  
 * **`playlist_all`**: Loads all 24 presets sequentially for the complete collection. Recommend against using this unless experienced with navigating the preset selection menu system.
-* ** `playlist_new_stuff`**: coco_mod, tape_deck, dissolve, splicer, window, reverb_feedback
+* **`playlist_new_stuff`**: coco_mod, tape_deck, dissolve, splicer, window, reverb_feedback
 
 
 ## **💻 Developer API & Macros (stuff.h)**
@@ -190,4 +190,5 @@ To prevent memory crashes while changing between 8-bit tape loops and 16-bit syn
 * New Preset: Splicer
 * New Preset: Dissolve
 * New Preset: Feedback reverb
+* Added Crossfade from Peter's Firmware
 
