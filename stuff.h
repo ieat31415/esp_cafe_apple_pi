@@ -54,9 +54,33 @@ static int offset = 0;
 #define BUTTON_PRESSED (is_pressed && !preset_mode) //NEW FIRMWARE
 // ---------------------------------------------------------
 
+// =========================================================
+// CROSSFADE
+// =========================================================
+// Added as per Peter's crossfade update
+// Peter defaults the Crossbite to 8
+// 8 means about 1/512 of the loop
+// At base clockrate of 48kHz a countdown of 256 (2^8 = 256) is a 5.3 millisecond crossfade. 
+// Increasing this by one doubles the crossfade time or vice versa.
+// For seemless crossfades of lower pitch audio, the wave cycle can be > 30ms (for C1)
+// Setting Crossbite to 10 is a 21ms crossfade at base CPU speed
+// The CPU speed controls the crossfade time, so slower clock speeds will have slower fade times
+// If the CPU speed is set faster, then the crossfade time will be shorter 
+// but either way the number of samples is the same, so the fade has the same effect
+// Set to -1 for no crossfade, this cancels out the crossfade
+#define CROSSBITE 8  // Change this for longer/shorter crossfades
+#define CROSSFADE (1<<(CROSSBITE)) 
+int xfado = 0;  // Fade out for switching from delay to looping
+int yfado = 0;  // Fade in for switching from looping to delay
+
 // CROSSFADE to be called by presets to avoid clicks on loops. Added per Peter's crossfade update
-#define TRIGGER_CROSSFADE \
-    if (xfado == 0) xfado = CROSSFADE;
+#define TRIGGER_CROSSFADE(is_freezing) \
+  if (is_freezing) { \
+      if (xfado == 0) xfado = CROSSFADE; \
+  } else { \
+      if (yfado == 0) yfado = CROSSFADE; \
+  }
+// ---------------------------------------------------------
 
 #define PRESETTER(p) attachInterrupt(2, p, FALLING);
 
@@ -91,20 +115,6 @@ bool lamp; // declare the lamp variable for lampaflip
 #define LAMPAFLIP \
   lamp = !lamp; \
   LAMPLIGHT
-
-// --- CROSSFADE CONSTANTS ---  Added as per Peter's crossfade update
-// Peter defaults the Crossbite to 8
-// At base clockrate of 48kHz a countdown of 256 (2^8 = 256) is a 5.3 millisecond crossfade. 
-// Increasing this by one doubles the crossfade time or vice versa.
-// For seemless crossfades of lower pitch audio, the wave cycle can be > 30ms (for C1)
-// Setting Crossbite to 10 is a 21ms crossfade at base CPU speed
-// The CPU speed controls the crossfade time, so slower clock speeds will have slower fade times
-// If the CPU speed is set faster, then the crossfade time will be shorter 
-// but either way the number of samples is the same, so the fade has the same effect
-// Set to -1 for no crossfade, this cancels out the crossfade
-#define CROSSBITE 8  // Change this for longer/shorter crossfades
-#define CROSSFADE (1<<(CROSSBITE)) 
-int xfado = 0;  // countdown timer
 // ---------------------------------------------------------
 
 
@@ -555,7 +565,7 @@ static int delayskp;
 static int lastskp;
 int adc_read;
 int gyo;
-int pout;  //persistent_red
+volatile int pout;  //persistent_red // updated to volatile per Peter's FW
 
 // ORIGINAL FIRMWARE
 // optimizes memory use for 12 bit ADC
@@ -574,7 +584,7 @@ int dellius(int ptr, int val, bool but) {
   zut = delptr[(ptr >> 1) + biz] << 4;
   zut |= (delptr[(ptr >> 1) + 1 - biz] & (0xF << (forsh))) >> (forsh);
 
-  // When button is pressed, keeping recording during crossfade time
+  // When button is pressed to loop, keeping recording during crossfade time
   if ((!but) || (but && (xfado > 0))) {
 
     // Linear Crossfade of the live signal and the buffer 
@@ -583,6 +593,13 @@ int dellius(int ptr, int val, bool but) {
         val += (zut * (CROSSFADE - xfado)) >> CROSSBITE;      
         xfado--;  
     }
+
+    // Linear Crossfade of the buffer signal and the live signal when unfreezing
+        if (yfado > 0) {
+            val = (val * (CROSSFADE - yfado)) >> CROSSBITE;
+            val += (zut * yfado) >> CROSSBITE;
+            yfado--;
+        }
 
     // re-pack the buffer to 12 bits by splitting the second byte of the 12bit read input across the end of each 8 bit buffer
     delptr[(ptr >> 1) + biz] = (uint8_t)(val >> 4);
@@ -639,6 +656,7 @@ void initDEL() {
   delptr = delaybuffa;
   t = 0;
   xfado = 0; // initialize crossfade timer. added per peter's crossfade
+  yfado = 0; // initialize crossfade timer. added per peter's crossfade
 
   //esp_task_wdt_init(30, false);
 

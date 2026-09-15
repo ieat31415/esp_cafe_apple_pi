@@ -167,7 +167,7 @@ void (*playlist_test[])() = {
 };
 
 void (*playlist_new_stuff[])() = {
-    coco_mod, tape_deck, dissolve, splicer, window, reverb_feedback
+    coco_mod, external_sync, coco_og, echo_og, tape_deck, dissolve, splicer, window, reverb_feedback
 };
 
 // ------------------------------------------

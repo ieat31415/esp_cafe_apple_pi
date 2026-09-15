@@ -83,6 +83,7 @@ morph_to_8bit(); //needed for buffer translation
 // --- WAKE UP & BOOT SYNC ---
     static bool is_first_run = true;
     static bool last_frozen = false; //added memory state
+    static int smoothed_earth = -1;    // for Earth Smoothing 
     if (is_first_run) {
         is_first_run = false;
         // Pre-read the Earth knob to anchor the state without toggling the lamp
@@ -93,11 +94,19 @@ morph_to_8bit(); //needed for buffer translation
         }
     }
 
- int earth_cv = EARTHREAD;
+// EARTHREAD SLEW
+// Needed to prevent false triggers 
+int raw_earth = EARTHREAD; 
+
+if (smoothed_earth == -1) {
+    smoothed_earth = raw_earth; 
+} else {
+    smoothed_earth += (raw_earth - smoothed_earth) >> 4; // LPF
+}
 
 // HYSTERESIS (Using earth_cv)
  if (earth_last_state == 0) {
-     if (earth_cv > TRIGGER_ON_THRESHOLD) {
+     if (smoothed_earth > TRIGGER_ON_THRESHOLD) {
          lamp = !lamp; 
          audio_frozen_state = lamp;
         if (lamp) { LAMP_ON; } 
@@ -106,7 +115,7 @@ morph_to_8bit(); //needed for buffer translation
      }
  } 
  else { 
-     if (earth_cv < TRIGGER_OFF_THRESHOLD) {
+     if (smoothed_earth < TRIGGER_OFF_THRESHOLD) {
          earth_last_state = 0; 
      }
  }
@@ -116,9 +125,7 @@ morph_to_8bit(); //needed for buffer translation
  //  This turns on the crossfade for the Button or Earth
  if (audio_frozen_state != last_frozen) {
      last_frozen = audio_frozen_state;
-     if (audio_frozen_state) {
-         TRIGGER_CROSSFADE
-     }
+     TRIGGER_CROSSFADE(audio_frozen_state) // Trigger crossfade will trigger either xfado or yfado based on frozen state
  }
 
 
@@ -194,6 +201,7 @@ morph_to_8bit(); //needed for buffer translation
 // --- WAKE UP & BOOT SYNC ---
     static bool is_first_run = true;
     static bool last_frozen = false;
+    static int smoothed_earth = -1;    // for Earth Smoothing 
     if (is_first_run) {
         is_first_run = false;
         // Pre-read the Earth knob to anchor the state without toggling the lamp
@@ -204,11 +212,19 @@ morph_to_8bit(); //needed for buffer translation
         }
     }
 
- int earth_cv = EARTHREAD;
+// EARTHREAD SLEW
+// Needed to prevent false triggers 
+int raw_earth = EARTHREAD; 
+
+if (smoothed_earth == -1) {
+    smoothed_earth = raw_earth; 
+} else {
+    smoothed_earth += (raw_earth - smoothed_earth) >> 4; // LPF
+}
 
 // HYSTERESIS (Using earth_cv)
  if (earth_last_state == 0) {
-     if (earth_cv > TRIGGER_ON_THRESHOLD) {
+     if (smoothed_earth  > TRIGGER_ON_THRESHOLD) {
          lamp = !lamp; 
          audio_frozen_state = lamp;
         if (lamp) { LAMP_ON; } 
@@ -217,7 +233,7 @@ morph_to_8bit(); //needed for buffer translation
      }
  } 
  else { 
-     if (earth_cv < TRIGGER_OFF_THRESHOLD) {
+     if (smoothed_earth < TRIGGER_OFF_THRESHOLD) {
          earth_last_state = 0; 
      }
  }
@@ -227,9 +243,7 @@ morph_to_8bit(); //needed for buffer translation
  //  This turns on the crossfade for the Button or Earth
  if (audio_frozen_state != last_frozen) {
      last_frozen = audio_frozen_state;
-     if (audio_frozen_state) {
-         TRIGGER_CROSSFADE
-     }
+    TRIGGER_CROSSFADE(audio_frozen_state) // Trigger crossfade will trigger either xfado or yfado based on frozen state
  }
 
  pout=dellius(t,gyo,audio_frozen_state); //disabing lamp during preset selection to allow buffer transfer
@@ -287,6 +301,7 @@ void IRAM_ATTR echo_og() {
 // --- WAKE UP & BOOT SYNC ---
     static bool is_first_run = true;
     static bool last_frozen = false;
+    static int smoothed_earth = -1; // for Earth Smoothing 
     static bool prev_skip = false; // Memory for our edge detector
 
     if (is_first_run) {
@@ -299,11 +314,19 @@ void IRAM_ATTR echo_og() {
         }
     }
     
- int earth_cv = EARTHREAD;
+// EARTHREAD SLEW
+// Needed to prevent false triggers 
+int raw_earth = EARTHREAD; 
+
+if (smoothed_earth == -1) {
+    smoothed_earth = raw_earth; 
+} else {
+    smoothed_earth += (raw_earth - smoothed_earth) >> 4; // LPF
+}
 
 // HYSTERESIS (Using earth_cv)
  if (earth_last_state == 0) {
-     if (earth_cv > TRIGGER_ON_THRESHOLD) {
+     if (smoothed_earth> TRIGGER_ON_THRESHOLD) {
          lamp = !lamp; 
          audio_frozen_state = lamp;
         if (lamp) { LAMP_ON; } 
@@ -312,19 +335,17 @@ void IRAM_ATTR echo_og() {
      }
  } 
  else { 
-     if (earth_cv < TRIGGER_OFF_THRESHOLD) {
+     if (smoothed_earth < TRIGGER_OFF_THRESHOLD) {
          earth_last_state = 0; 
      }
  }
 
-  // CROSSFADE
- // Added as per Peter's crossfade
- //  This turns on the crossfade for the Button or Earth
+// CROSSFADE
+// Added as per Peter's crossfade
+// This turns on the crossfade for the Button or Earth
  if (audio_frozen_state != last_frozen) {
      last_frozen = audio_frozen_state;
-     if (audio_frozen_state) {
-         TRIGGER_CROSSFADE
-     }
+    TRIGGER_CROSSFADE(audio_frozen_state) // Trigger crossfade will trigger either xfado or yfado based on frozen state
  }
 
  DACWRITER(pout)
@@ -2484,17 +2505,15 @@ void IRAM_ATTR external_sync() {
         tail_active = false;
         fade_state = 0; 
 
-        // Inherit the global playhead 't' to prevent clicks
-        sync_head = t & 0x1FFFF; // Force within 131071
-        if (sync_head >= current_buffer_len) sync_head = 0;
-        
-        sync_head_fine = sync_head << 12;
-
-        virtual_t_fine = sync_head_fine;
+        current_buffer_len = 131072; //defaults to full buffer while calculating buffer length
+        head_inc = 4096;
         virtual_inc = 4096;
 
-        head_inc = 4096;
-        current_buffer_len = 131072;
+        // Inherit the global playhead 't' to prevent clicks
+        sync_head = t & 0x1FFFF; // Mask to max buffer legnth
+        if (sync_head >= current_buffer_len) sync_head = 0;
+        sync_head_fine = sync_head << 12;
+        virtual_t_fine = sync_head_fine;
     }
 
     // ============================
@@ -7053,9 +7072,8 @@ void IRAM_ATTR tape_deck() {
 
 /////////////////////////////////////////////////////////END//////////////////////////////////////////////////////
 
-
 // ==========================================
-// WINDOW - from Daniel Fishkin
+// WINDOW - from Daniel Fishkin (MODIFIED)
 // ==========================================
 // a modified version of coco that varies the window of the buffer size
 // same as coco_mod, but earth no longer toggles freeze —
@@ -7074,94 +7092,117 @@ static const int coco_window_table[17] = {
   92341, 105127, 115364, 122779, 127507, 130005, 130937, 131071
 };
 
-/*
-static const int coco_window_table[17] = {
-  2000, 2598, 3374, 4381, 5690, 7391, 9599, 12466, 16191,
-  21028, 27310, 35470, 46067, 59830, 77705, 100920, 131071
-};
-*/
-
-
 static int coco_window_size = COCO_WINDOW_MAX;
 
 void IRAM_ATTR window() {
-morph_to_8bit(); //needed for buffer translation
-static bool last_frozen = false; //needed for crossfade
+    morph_to_8bit(); //needed for buffer translation
 
- DACWRITER(pout)
- gyo=ADCREADER
+    // --- WAKE UP ---
+    static bool last_frozen = false; 
+    static bool was_in_menu = false;
+    static int window_anchor = 0;
+    static int smoothed_earth = -1;
 
-//MODIFIED FIRMWARE
- int earth_raw = EARTHREAD; // 0-255
-
- // Fixed Quantum calibration — same constants as sampler()
- int constrained_earth = earth_raw;
- if (constrained_earth < 56) constrained_earth = 56;
- if (constrained_earth > 160) constrained_earth = 160;
-
- // Rescale 56-160 up to a full 0-255 span
- int earth_cv = ((constrained_earth - 56) * 255) / (160 - 56);
-
- // Invert so unplugged (low reading) = MAX window
- int inv_cv = 255 - earth_cv;
-
-// Extract the top 4 bits to find the segment (0-15)
-int seg = inv_cv >> 4; 
-
-// Extract the bottom 4 bits to find the fraction (0-15)
-int seg_frac = inv_cv & 0x0F; 
-
-int lo = coco_window_table[seg];
-int hi = coco_window_table[seg + 1];
-
-// Interpolate and divide by 16 using a bit-shift
-int target_window = lo + (((hi - lo) * seg_frac) >> 4);
-
- if (target_window > COCO_WINDOW_MAX) target_window = COCO_WINDOW_MAX;
- if (target_window < COCO_WINDOW_MIN) target_window = COCO_WINDOW_MIN;
-
- coco_window_size += (target_window - coco_window_size) >> 2;
-
-// Crossfade added as per peter's update
-if (audio_frozen_state != last_frozen) {
-    last_frozen = audio_frozen_state;
-    if (audio_frozen_state) {
-        TRIGGER_CROSSFADE
+    if (preset_mode) {
+        was_in_menu = true;
+    } else if (was_in_menu) {
+        was_in_menu = false;
+        last_frozen = audio_frozen_state;
+        window_anchor = t; //sets playhead to where it was in previous preset from preset selection mode
+        smoothed_earth = -1; //earth smoothing to keep buffer at max size on boot
     }
-}
 
- if (audio_frozen_state) { LAMP_ON; }
- else { LAMP_OFF; }
-///////////END MODIFIED
+    DACWRITER(pout)
+    gyo=ADCREADER
 
- pout=dellius(t,gyo,audio_frozen_state);
- if (FLIPPERAT) t--;
- else t++;
+    // EARTH smoothing prior to 8bit conversion
+    int raw_earth = EARTHREAD << 8; 
+    
+    if (smoothed_earth == -1) {
+        smoothed_earth = raw_earth;
+    } else {
+        smoothed_earth += (raw_earth - smoothed_earth) >> 4; 
+    }
 
- if (t >= coco_window_size) t = 0;
- if (t < 0) t = coco_window_size - 1;
+    int earth_8bit = smoothed_earth >> 8;
 
- if (SKIPPERAT)  {
-  if (lastskp==0) delayskp = t;
-  lastskp = 1;
- } else {
-  if (lastskp) t=delayskp;
-  lastskp = 0;
- }
+    // CALCULATE TARGET WINDOW
+    int constrained_earth = earth_8bit;
+    if (constrained_earth < 56) constrained_earth = 56;
+    if (constrained_earth > 160) constrained_earth = 160;
 
-ASHWRITER(pout);
-//ENVELOPE_ASHWRITER(pout);
+    // Rescale 56-160 up to a full 0-255 span
+    int earth_cv = ((constrained_earth - 56) * 255) / (160 - 56);
 
-    if ((t & 0x1FFF) < 2000) {
-        if (t < 8192) { YELLOW_AUDIO(4095); }
+    // Invert so unplugged (low reading) = MAX window
+    int inv_cv = 255 - earth_cv;
+ 
+    // Extract the top 4 bits to find the segment (0-15)
+    int seg = inv_cv >> 4; 
+
+    // Extract the bottom 4 bits to find the fraction (0-15)
+    int seg_frac = inv_cv & 0x0F; 
+
+    int lo = coco_window_table[seg];
+    int hi = coco_window_table[seg + 1];
+
+    // Interpolate and divide by 16 using a bit-shift
+    int target_window = lo + (((hi - lo) * seg_frac) >> 4);
+
+    if (target_window > COCO_WINDOW_MAX) target_window = COCO_WINDOW_MAX;
+    if (target_window < COCO_WINDOW_MIN) target_window = COCO_WINDOW_MIN;
+
+    // added condition to set window at boot
+    if (smoothed_earth == raw_earth) {
+        coco_window_size = target_window;
+    } else {
+        coco_window_size += (target_window - coco_window_size) >> 2;
+    }
+
+    // Crossfade added as per Peter's update
+    if (audio_frozen_state != last_frozen) {
+        last_frozen = audio_frozen_state;
+        TRIGGER_CROSSFADE(audio_frozen_state) 
+    }
+
+    if (audio_frozen_state) { LAMP_ON; }
+    else { LAMP_OFF; }
+    
+    // Calculates the playhead relative to the window
+    int local_t = (t - window_anchor) & 0x1FFFF;
+    if (local_t >= coco_window_size) {
+        t = window_anchor;
+        local_t = 0;
+    }
+
+    pout=dellius(t,gyo,audio_frozen_state);
+    if (FLIPPERAT) t--;
+    else t++;
+    t &= 0x1FFFF; 
+
+    if (SKIPPERAT)  {
+        if (lastskp==0) delayskp = t;
+        lastskp = 1;
+    } else {
+        if (lastskp) {
+            t=delayskp;
+            window_anchor = t; // Reset anchor on skip jump
+        }
+        lastskp = 0;
+    }
+
+    ASHWRITER(pout);
+
+    if ((local_t) < 2000) { 
+        if (local_t < 8192) { YELLOW_AUDIO(4095); }
         else { YELLOW_AUDIO(3000); }
     } else {
         YELLOW_AUDIO(0);
     }
 
- REG(I2S_CONF_REG)[0] &= ~(BIT(5));
- REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
- REG(I2S_CONF_REG)[0] |= (BIT(5));
+    REG(I2S_CONF_REG)[0] &= ~(BIT(5));
+    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+    REG(I2S_CONF_REG)[0] |= (BIT(5));
 }
 
 /////////////////////////////////////////////////////////END//////////////////////////////////////////////////////
@@ -7229,9 +7270,7 @@ void IRAM_ATTR splicer() {
     // --- FREEZE SYNC ---
     if (audio_frozen_state != last_frozen) {
         last_frozen = audio_frozen_state;
-        if (audio_frozen_state) { //Start crossfade
-            TRIGGER_CROSSFADE
-        }
+        TRIGGER_CROSSFADE(audio_frozen_state) // Trigger crossfade will trigger either xfado or yfado based on frozen state
     }
 
     // --- HARDWARE CONTROLS ---
