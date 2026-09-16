@@ -11,6 +11,7 @@ An alternative firmware for the ESP32-based Ciat-Lonbarde Cafeteria / Cafe Quant
 5. Optional: Go to Arduino IDE's Tools \-\> Erase All Flash Before Sketch Upload and set it to Enabled. This may be needed to troubleshoot, but if used, make sure to turn back to "disabled" so that tape decks will not be erased.
 6. Check Boot Configuration in the `.ino` file and set as desired.
 7. Setup the preset playlist in the `.ino` file to be loaded as desired.
+7. Optional: Try different crossfade lengths (including an option for no crossfades) in the `stuff` file.
 8. Upload to Cafe powered on.
 
 ## **🍎 Preset Selection Mode**
