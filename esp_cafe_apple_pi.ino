@@ -119,7 +119,7 @@ void (*playlist_sync[])() = {
 };
 
 void (*playlist_reverbs[])() = {
-    echo_mod, reverb_spring, reverb_granular, reverb_feedback
+    echo_mod, echo_og, reverb_spring, reverb_granular, reverb_feedback
 };
 
 void (*playlist_all_delays[])() = {
@@ -171,7 +171,7 @@ void (*playlist_new_stuff[])() = {
 // PRESET PLAYLIST SELECTION TO LOAD
 // ------------------------------------------
 // Type the name of the playlist you want to load onto the Cafe: <<<<<<<<<<<<<<<<<<<<<<<<<----------
-#define ACTIVE_PLAYLIST playlist_new_stuff
+#define ACTIVE_PLAYLIST playlist_reverbs
 
 
 

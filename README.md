@@ -118,7 +118,7 @@ To use one of these lists, type its name into the `#define ACTIVE_PLAYLIST` line
 * **`playlist_loopers`**: Focused on manipulating live audio buffers.  
   * *(0) coco\_mod, (1) formant, (2) scrambler, (3) sampler, (4) sampler\_4x, (5) granular, (6) phasing, (7) window, (8) splicer, (9) dissolve*  
 * **`playlist_reverbs`**: Presets capable of syncing to or generating clock signals.  
-  * *(0) echo\_mod, (1) reverb\_spring, (2) reverb\_granular, (3) reverb\_feedback*  
+  * *(0) echo\_mod,(1) echo_og, (2) reverb\_spring, (3) reverb\_granular, (4) reverb\_feedback*  
 * **`playlist_sync`**: Presets capable of syncing to or generating clock signals.  
   * *(0) coco\_mod, (1) external\_sync, (2) sampler, (3) sampler\_4x*  
 * **`playlist_all_delays`**: All time control.  
