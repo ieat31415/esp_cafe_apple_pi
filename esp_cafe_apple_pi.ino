@@ -75,24 +75,25 @@
     //  presets[10] = reverb_feedback;
     //  presets[11] = harmonizer;
     //  presets[12] = saturator;
-    //  presets[13] = window;
-    //  presets[14] = splicer; 
-    //  presets[15] = external_sync;
+    //  presets[13] = external_sync;
+    //  presets[14] = window;
+    //  presets[15] = splicer; 
     //  presets[16] = scrambler;
     //  presets[17] = sampler;
     //  presets[18] = sampler_4x;
     //  presets[19] = granular;
     //  presets[20] = phasing;
     //  presets[21] = dissolve;
-    //  presets[22] = bytebeats_mod;
-    //  presets[23] = megabytebeats;
-    //  presets[24] = arcade;
-    //  presets[25] = FX;
-    //  presets[26] = wavetable;
-    //  presets[27] = drone;
-    //  presets[28] = groovebox;
-    //  presets[29] = polyrhythms;
-    //  presets[30] = tape_deck;
+    //  presets[22] = tape_deck;
+    //  presets[23] = bytebeats_mod;
+    //  presets[24] = megabytebeats;
+    //  presets[25] = arcade;
+    //  presets[26] = FX;
+    //  presets[27] = wavetable;
+    //  presets[28] = drone;
+    //  presets[29] = groovebox;
+    //  presets[30] = polyrhythms;
+    
 
 // PRESET PLAYLIST DEFINITIONS
 // Define custom preset playlists below 
@@ -160,10 +161,6 @@ void (*playlist_hello_world[])() = {
 
 void (*playlist_mono[])() = {
     saturator, reverb_spring, reverb_granular, flanger
-};
-
-void (*playlist_test[])() = {
-    reverb_feedback
 };
 
 void (*playlist_new_stuff[])() = {

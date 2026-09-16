@@ -114,13 +114,13 @@ To use one of these lists, type its name into the `#define ACTIVE_PLAYLIST` line
 * **`playlist_old_school`**: A modded Cafe experience.  
   * *(0) coco\_og, (1) echo\_og*  
 * **`playlist_loopers`**: Focused on manipulating live audio buffers.  
-  * *(0) coco\_mod, (1) formant, (2) scrambler, (3) sampler, (4) sampler\_4x, (5) granular, (6) phasing*  
+  * *(0) coco\_mod, (1) formant, (2) scrambler, (3) sampler, (4) sampler\_4x, (5) granular, (6) phasing, (7) window, (8) splicer, (9) dissolve*  
 * **`playlist_reverbs`**: Presets capable of syncing to or generating clock signals.  
-  * *(0) echo\_mod, (1) reverb\_spring, (2) reverb\_granular*  
+  * *(0) echo\_mod, (1) reverb\_spring, (2) reverb\_granular, (3) reverb\_feedback*  
 * **`playlist_sync`**: Presets capable of syncing to or generating clock signals.  
   * *(0) coco\_mod, (1) external\_sync, (2) sampler, (3) sampler\_4x*  
 * **`playlist_all_delays`**: All time control.  
-  * *(0) coco\_mod, (1) external\_sync, (2) formant, (3) scrambler, (4) sampler, (5)sampler\_4x,  (6) granular, (7) phasing, (8) echo\_mod, (9) reverb\_spring, (10)reverb\_granular, (11) flanger*  
+  * *(0) coco\_mod, (1) external\_sync, (2) formant, (3) window, (4) splicer, (5) scrambler, (6) sampler, (7) sampler\_4x,  (8) granular, (9) phasing, (10) echo\_mod, (11) reverb\_spring, (12)reverb\_granular, (13) reverb\_feedback, (14) flanger*  
 * **`playlist_live_FX`**: Real time FX processing  
   * *(0) saturator, (1) flanger*  
 * **`playlist_bytes`**: Generative, algorithmic, 8-bit nostalgia.  
@@ -133,7 +133,7 @@ To use one of these lists, type its name into the `#define ACTIVE_PLAYLIST` line
   * *(0) groovebox, (1) polyrhythms*  
 * **`playlist_ambient`**: Spatial and atmospheric.  
   * *(0) reverb\_spring, (1) echo\_mod, (2) reverb\_granular, (3) drone, (4) phasing*  
-* **`playlist_all`**: Loads all 24 presets sequentially for the complete collection. Recommend against using this unless experienced with navigating the preset selection menu system.
+* **`playlist_all`**: The complete collection. Loads all 31 presets sequentially in the order listed on the `.ino` file.  Not Recommended to use this unless experienced with navigating the preset selection menu system.
 * **`playlist_new_stuff`**: coco_mod, tape_deck, dissolve, splicer, window, reverb_feedback
 
 
