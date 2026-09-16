@@ -11,6 +11,7 @@ An alternative firmware for the ESP32-based Ciat-Lonbarde Cafeteria / Cafe Quant
 5. Optional: Go to Arduino IDE's Tools \-\> Erase All Flash Before Sketch Upload and set it to Enabled. This may be needed to troubleshoot, but if used, make sure to turn back to "disabled" so that tape decks will not be erased.
 6. Check Boot Configuration in the `.ino` file and set as desired.
 7. Setup the preset playlist in the `.ino` file to be loaded as desired.
+8. Upload to Cafe powered on.
 
 ## **🍎 Preset Selection Mode**
 
@@ -120,7 +121,7 @@ To use one of these lists, type its name into the `#define ACTIVE_PLAYLIST` line
 * **`playlist_sync`**: Presets capable of syncing to or generating clock signals.  
   * *(0) coco\_mod, (1) external\_sync, (2) sampler, (3) sampler\_4x*  
 * **`playlist_all_delays`**: All time control.  
-  * *(0) coco\_mod, (1) external\_sync, (2) formant, (3) window, (4) splicer, (5) scrambler, (6) sampler, (7) sampler\_4x,  (8) granular, (9) phasing, (10) echo\_mod, (11) reverb\_spring, (12)reverb\_granular, (13) reverb\_feedback, (14) flanger*  
+  * *(0) coco\_mod, (1) external\_sync, (2) formant, (3) window, (4) splicer, (5) scrambler, (6) sampler, (7) sampler\_4x,  (8) granular, (9) phasing, (10) echo\_mod, (11) reverb\_spring, (12) reverb\_granular, (13) reverb\_feedback, (14) flanger*  
 * **`playlist_live_FX`**: Real time FX processing  
   * *(0) saturator, (1) flanger*  
 * **`playlist_bytes`**: Generative, algorithmic, 8-bit nostalgia.  
