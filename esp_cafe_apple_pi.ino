@@ -169,15 +169,12 @@ void (*playlist_new_stuff[])() = {
     coco_mod, external_sync, coco_og, echo_og, tape_deck, dissolve, splicer, window, reverb_feedback
 };
 
-void (*playlist_test[])() = {
-    coco_mod, sampler,  sampler_4x, granular, phasing
-};
 
 // ------------------------------------------
 // PRESET PLAYLIST SELECTION TO LOAD
 // ------------------------------------------
 // Type the name of the playlist you want to load onto the Cafe: <<<<<<<<<<<<<<<<<<<<<<<<<----------
-#define ACTIVE_PLAYLIST playlist_all_delays
+#define ACTIVE_PLAYLIST playlist_new_stuff
 
 
 
