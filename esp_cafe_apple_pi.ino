@@ -22,7 +22,7 @@
 // ------------------------------------------
 
 // ==========================================
-// CHANGE LOG --- VERSION 2.718
+// CHANGE LOG --- VERSION 2.71828
 // ==========================================
 // New Preset: Tape Deck, an interface to save and recall loops in persistent memory, even across power cycles
 // Load a tape deck slot during power on instead of noise. Set up in Boot configuration below
@@ -30,7 +30,9 @@
 // New Preset: Splicer
 // New Preset: Dissolve
 // New Preset: Feedback reverb
-// Added Crossfade from Peter's Firmware
+// Plus: Added Crossfade from Peter's Firmware
+// Plus: Added crossfades for reverbs
+// Plus: Many under the hood improvements
 // ------------------------------------------
 
 // ============================================================================
@@ -44,7 +46,7 @@
 
 // TAPE SAVE SETUP--- NEW FIRMWARE
 // Pre-load a tape every time cafe boots (if Classic_noise_boost is false)
-#define ENABLE_BOOT_TAPE true // Set to false to start with an empty canvas and drums
+#define ENABLE_BOOT_TAPE true // Set to false to clear buffer on boot (classic_noise_boot overrides this setting). Set to true to load tape slot below.
 #define BOOT_TAPE_SLOT 1 // Specify which tape slot (1-8) to load at boot
 #define BOOT_TAPE_FROZEN true // Set to true to load the buffer with the tape on boot
 // ============================================================================
@@ -64,8 +66,8 @@
 
     //  presets[0] = coco_mod;
     //  presets[1] = coco_og;
-    //  presets[2] = echo_mod;
-    //  presets[3] = echo_og;
+    //  presets[2] = echo_og;
+    //  presets[3] = echo_mod;
     //  presets[4] = formant;
     //  presets[5] = flanger;
     //  presets[6] = karplus;
@@ -127,7 +129,7 @@ void (*playlist_all_delays[])() = {
 };
 
 void (*playlist_live_FX[])() = {
-   saturator, flanger
+   saturator, flanger, harmonizer
 }; 
 
 void (*playlist_bytes[])() = {
@@ -139,7 +141,7 @@ void (*playlist_synth_voices[])() = {
 };
 
 void (*playlist_resonance[])() = {
-    karplus, resonator
+    karplus, resonator, harmonizer
 };
 
 void (*playlist_drums[])() = {
@@ -150,7 +152,7 @@ void (*playlist_ambient[])() = {
     reverb_spring, echo_mod, reverb_granular, drone, phasing
 };
 
-// here for reference. will likely crash due to memory fragmentation from the variables across all these presets prevent continguous memory for the buffer.
+// here for reference, not recommended
 void (*playlist_all[])() = {
     coco_mod, coco_og, echo_og, echo_mod, formant, flanger, karplus, resonator, reverb_spring, reverb_granular, reverb_feedback, harmonizer, saturator, external_sync, window, splicer, scrambler, sampler, sampler_4x, granular, phasing, dissolve, tape_deck, bytebeats_mod, megabytebeats, arcade, FX, wavetable, drone, groovebox, polyrhythms
 };
@@ -167,11 +169,15 @@ void (*playlist_new_stuff[])() = {
     coco_mod, external_sync, coco_og, echo_og, tape_deck, dissolve, splicer, window, reverb_feedback
 };
 
+void (*playlist_test[])() = {
+    coco_mod, sampler,  sampler_4x, granular, phasing
+};
+
 // ------------------------------------------
 // PRESET PLAYLIST SELECTION TO LOAD
 // ------------------------------------------
 // Type the name of the playlist you want to load onto the Cafe: <<<<<<<<<<<<<<<<<<<<<<<<<----------
-#define ACTIVE_PLAYLIST playlist_reverbs
+#define ACTIVE_PLAYLIST playlist_all_delays
 
 
 
@@ -184,10 +190,6 @@ void setup() {
   delay(1000); // Give the serial monitor a moment to connect
   Serial.printf("\n--- BOOT START ---\n");
   Serial.printf("Initial Free Heap: %d bytes\n", ESP.getFreeHeap());
-
-//   if (!LittleFS.begin(true)) {
-//     Serial.println("LittleFS Mount Failed");
-//   }
 
 // --- EXPLICIT FORMAT & MOUNT ---
   if (!LittleFS.begin(false)) {
@@ -253,7 +255,7 @@ void setup() {
         dellius(i, 0, false);
     }
     
-    load_drum_kit(0); // load drum samples into RAM
+    //load_drum_kit(0); // load drum samples into RAM
   }
   // --------------------------------------------------------
 
@@ -461,27 +463,72 @@ void loop() {
         load_drum_kit(0);
     }
 
-    Serial.printf("Exiting mode. Loading preset index: %d\n", preset_counter);
-
     // EXIT PRESET SELECTION MODE
-    // When done tapping, pause the system for 1 microsecond
-    // to format the memory and load the new preset
 
-    REG(I2S_CONF_REG)[0] &= ~(BIT(5)); // Pause I2S
-    detachInterrupt(2);                // Pause Clock
+    Serial.println("[EXITING] 1. Temporarily disabling button (to prevent bounce)...");
+    detachInterrupt(32); // Disconnect the black button
 
-    // Load the new preset safely while everything is paused
-    PRESETTER(presets[preset]);
+    // Unplug the clock
+    Serial.println("[EXITING] 2. Detaching interrupt...");
+    detachInterrupt(2);                
+    
+    // Pause the water main
+    Serial.println("[EXITING] 3. Starting 10ms crossfade...");
+    // flush the incoming audio so the 64-sample RX FIFO doesn't overflow
+    int start_vol = pout; 
+    int steps = 500; 
+    
+    for (int i = 0; i <= steps; i++) {
+        // read and discard incoming audio samples
+        // prevents  overflow AND natively paces the loop to exactly 48kHz (20.8us per step)!
+        volatile uint32_t sinkhole = REG(I2S_FIFO_RD_REG)[0]; 
+        
+        int current_vol = start_vol + ((2048 - start_vol) * i) / steps;
+        DACWRITER(current_vol);
+        ASHWRITER(current_vol);
+    }
 
+    Serial.println("[EXITING] 4. Pausing I2S reading audio...");
+    REG(I2S_CONF_REG)[0] &= ~(BIT(5));
+
+    Serial.println("[EXITING] 5. Crossfade complete. Loading drum samples if polyrhythms preset is selected...");
     if (presets[preset] == polyrhythms) {
         load_drum_kit(0);
     }
 
     // Resume Audio Engine
+    Serial.println("[EXITING] 6. Restoring in loop mode...");
     lamp = audio_frozen_state; 
     LAMPLIGHT_OVERRIDE; 
+
+    Serial.println("[EXITING] 7. Hardware Reset...");
+    REG(I2S_CONF_REG)[0] |= BIT(30);  // Set I2S_RX_FIFO_RESET
+    REG(I2S_CONF_REG)[0] &= ~BIT(30); // Clear I2S_RX_FIFO_RESET
+
+    Serial.println("[EXITING] 8. Clearing and resuming I2S pipeline...");
+    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF; // Clear any clock ticks that queued up on the GPIO pin during the delay
+    REG(I2S_CONF_REG)[0] |= (BIT(5)); 
+
+    Serial.println("[EXITING] 8. Resuming I2S pipeline...");
     REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF; 
-    REG(I2S_CONF_REG)[0] |= (BIT(5));     
+    REG(I2S_CONF_REG)[0] |= (BIT(5));
+
+    Serial.println("[EXITING] 9. Hardware Spin-up Loop (1 millisecond)...");
+    // Hold the CPU safely in place while the I2S hardware packs the FIFO with fresh audio!
+    for (volatile int i = 0; i < 100000; i++) {
+        __asm__ __volatile__ ("nop");
+    }
+
+    // Load the new preset while everything is paused
+    Serial.println("[EXITING] 10. Attaching clock to new preset...");
+    PRESETTER(presets[preset]);
+
+    Serial.println("[EXITING] 11. Re-attaching button..."); 
+    CLICKETTE(doubleclicker);
+
+   //Serial.println("[EXITING] SUCCESS: Sequence complete. Loaded preset: %d\n", preset_counter);
+   Serial.printf("[EXITING] SUCCESS: Sequence complete. Loaded preset: %d\n", preset_counter);
+
   }
 
 // --- TAPE DECK SETUP ---
@@ -540,22 +587,24 @@ void loop() {
 
 //------------------------------------------
 
-
 // // ==========================================
 // // CAFE EARTH DIAGNOSTIC TOOL
 // // ==========================================
-// // USE THIS IF YOU WANT TO CHECK THE EARTH VALUES FOR REFERENCE DEVELOPING ANOTHER PRESET
-// // COMMENT OUT THE MAIN .INO FILE AND REPLACE WITH THIS
-// // TO READ THE QUANTIZED EARTH DATA READ OUT
-// // IN SERIAL MONITOR
+// // USE THIS IF YOU WANT TO CHECK THE EXACT EARTH VALUES TO CALIBRATE PRESETS.
+// // COMMENT OUT THE ORIGINAL SETUP() AND LOOP() FUNCTIONS IN YOUR MAIN .INO FILE 
+// // AND UNCOMMENT THIS SECTION TO RUN.
 
-// // Fulfill the needed definitions so the .h files compile successfully
+// // 1. Fulfill the OS definitions so synths.h compiles without errors
 // #define PRESETAMT 3
 // #define BYTECODES 0
+// #define BOOT_TAPE_SLOT 1
+// #define CROSSFADE 256
+// #define CROSSBITE 8
+// #define BUTTON_PRESSED (!(REG(GPIO_IN1_REG)[0] & 0x1))
 
 // #include "synths.h"
 
-// // Create a dummy function to prevent hardware button crashes
+// // 2. Create a dummy function to prevent hardware button crashes
 // void dummy_preset() {
 //     // Does nothing, just acts as a safe placeholder for the interrupt
 // }
@@ -564,7 +613,7 @@ void loop() {
 //     Serial.begin(115200);
 //     delay(1000);
 
-//     Serial.println("\n--- NATIVE I2S DIAGNOSTIC ---");
+//     Serial.println("\n--- NATIVE I2S EARTH DIAGNOSTIC ---");
 
 //     // Safely fill the preset array so the doubleclicker() interrupt has a safe target
 //     presets[0] = dummy_preset;
@@ -579,23 +628,23 @@ void loop() {
 //     // Pause the I2S Receive Engine to safely access the queue
 //     REG(I2S_CONF_REG)[0] &= ~(BIT(5));
 
-//     // Read the RAW 12-bit value directly from the FIFO
-//     // The original macro is: (REG(I2S_FIFO_RD_REG)[0]&0x7FF)>>3
-//     // We use & 0xFFF here so we can see the full 0-4095 range
-//     int raw_earth = REG(I2S_FIFO_RD_REG)[0] & 0xFFF;
+//     // Configure the ADC pattern table to ensure we are targeting the right pins
+//     REG(APB_SARADC_SAR1_PATT_TAB1_REG)[0] = (0x0C<<24) | (0x6C<<16);
+    
+//     // Pull the interleaved data from the FIFO
+//     uint32_t fifo_data = REG(I2S_FIFO_RD_REG)[0];
+//     int channel = (fifo_data >> 12) & 0xF;
+//     int raw_val = fifo_data & 0xFFF;
 
 //     // Clear interrupts and restart the I2S Receive Engine
 //     REG(I2S_INT_CLR_REG)[0]=0xFFFFFFFF;
 //     REG(I2S_CONF_REG)[0] |= (BIT(5));
 
-//     // Print
-//     Serial.print("Raw Earth (12-Bit): ");
-//     Serial.print(raw_earth);
-
-//     // print the original 8-bit macro result to compare
-//     int macro_earth = (raw_earth & 0x7FF) >> 3;
-//     Serial.print("\t | 8-Bit Macro Result: ");
-//     Serial.println(macro_earth);
+//     // Only print when we hit Channel 0 (Earth)
+//     if (channel == 0) {
+//         Serial.print("Raw Earth (12-Bit): ");
+//         Serial.println(raw_val);
+//     }
 
 //     // A 100ms delay gives a readable 10 frames per second on the Serial Monitor
 //     delay(100);

@@ -46,18 +46,18 @@ Here is an overview of all 30 included presets and how the hardware maps to thei
 * **coco\_og**: The original Cocoquantus-style coco. All bananas work as in Cocoquantus, except earth is the record button switch.
 * **coco\_mod**: A version of the coco preset with a few additions. The first difference is that in this version Record mode (Lamp Off) is the boot state, so the buffer automatically overwrites the noise. Earth acts as a record on/off toggle. Yellow outputs a clock pulse (16ppqn). Ash outputs clean audio at half volume.  
 * **window**: From Daniel Fishkin, this preset modulates the length of the buffer without affecting the pitch. It morphs from reverb to delay. Earth modulates the buffer length. Skip and Flip act as in coco. 
-* **splicer**: Inspired by Window, imagine the buffer as a tape that splicer can chop into a smaller pieces. Both the loop start and loop end points can be moved around in the buffer. With nothing patched to EARTH, the loop points are at the buffer's first and last bits (Unplugged = Full Buffer). EARTH without FLIP controls the loop end point. EARTH with FLIP ON controls the loop start point. FLIP is a latching switch. When ON, Earth controls loop start point. If Start > End, loop plays in reverse. SKIP randomizes playhead placement within the splice. BUTTON freezes buffer. ASH is wet audio at line level. YELLOW is end-of-cycle of the loop. Sends a pulse to sync. 
+* **splicer**: Inspired by Window, imagine the buffer as a tape that splicer can chop into a smaller pieces. Both the loop start and loop end points can be moved around in the buffer. With nothing patched to Earth, the loop points are at the buffer's first and last bits (Unplugged = Full Buffer). Earth without Flip controls the loop end point. Earth with Flip ON controls the loop start point. Flip is a latching switch. When ON, Earth controls loop start point. If Start > End, loop plays in reverse. Skip randomizes playhead placement within the splice. Button freezes buffer. Ash is wet audio at line level. Yellow is end-of-cycle of the loop. Sends a pulse to sync. 
 * **scrambler**: A live stutter/glitch effect utilizing a dual-buffer architecture. The playback buffer is divided into segments. Earth selects the active playback segment. Skip toggles between 16 or 3 segment divisions. Flip enables random skipping between segments. Button freezes the buffer.  
 * **formant**: A vowel filter bank applied to the audio buffer. Earth modulates the vowel tuning.  
 * **external\_sync**: A delay synchronized to an external clock. Good for syncing two cafes. Patch a clock (like a coco clock out, but it could also be irregular) into Skip to quantize the buffer length. Flip reverses the playhead. Earth is a record on/off toggle. Button freezes the buffer (which continues to quantize while frozen).  
-* **phasing**: Records a loop and plays it back with 4 drifting playheads heads. Button toggles between Record/Play modes. Skip triggers a one-shot recording (in Rec mode) or randomizes the playheads (in Play mode). Flip reverses all playhead directions. Earth modulates phase alignment. Yellow is bit-crushed audio. Ash outputs clean audio at half volume.
-* **dissolve**: Slowly disintegrate a loop. While lamp is on, it cuts the live audio every cycle of the loop will drop out more of the audio. While recording with lamp off, it will not write to the buffer in a drop out. EARTH controls the probability of the drop outs. FLIP reverses the playhead. SKIP is shuffle mode that randomly rearranges the buffer. YELLOW is a pulse for every drop out. ASH is audio out
+* **phasing**: Records a loop and plays it back with 4 drifting playheads heads. Button toggles between Record/Play modes as in Sampler. Skip triggers a one-shot recording (in Rec mode) or randomizes the playheads (in Play mode). Flip reverses all playhead directions. Earth modulates phase alignment. Yellow is bit-crushed audio. Ash outputs clean audio at half volume.
+* **dissolve**: Slowly disintegrate a loop. While lamp is on, it cuts the live audio every cycle of the loop will drop out more of the audio. While recording with lamp off, it will not write to the buffer in a drop out. Earth controls the probability of the drop outs. Flip reverses the playhead. Skip is shuffle mode that randomly rearranges the buffer. Yellow is a pulse for every drop out. Ash is audio out
 
 ### **Samplers & Granular**
 
-* **sampler (one-shot)**: A record/playback engine. Button toggles modes (Lamp OFF \= Armed, Strobe \= Recording, Solid \= Playback). Skip triggers recording or playback. Flip reverses playback. Earth sets the start position of the playhead. Yellow is a trigger at the end of the buffer, useful for looping.
+* **sampler (one-shot)**: A record/playback engine. Button toggles modes (Lamp OFF \= Armed, Strobe \= Recording, Solid \= Playback). Skip triggers recording or playback. After recording a one-shot sample, it switches to playback mode and subsequent Skip trigger playback the sample. Flip reverses playback. Earth sets the start position of the playhead. Yellow is a trigger at the end of the buffer, useful for looping.
 * **sampler\_4x**: A multi-slice sampler dividing the buffer into 4 segments. Earth selects the segment. Button toggles Record/Play modes. Skip triggers a re-triggerable one-shot. Flip triggers a non-re-triggerable one-shot. Yellow is a trigger at the end of the buffer segment, useful for looping each segment individually.
-* **granular**: A 16-voice granular engine. Button toggles Record/Play modes. Skip triggers grains. Earth modulates grain start position. Flip toggles grain size. Yellow is bit-crushed audio.
+* **granular**: A 16-voice granular engine. Button toggles Record/Play modes as in Sampler. Skip triggers grains. Earth modulates grain start position. Flip toggles grain size. Yellow is bit-crushed audio.
 
 ### **Reverbs & Resonators**
 
@@ -65,9 +65,9 @@ Here is an overview of all 30 included presets and how the hardware maps to thei
 * **echo\_mod**: A prime-number based delay/reverb with pitch shifting via Speed knob. Earth controls a low-pass filter. Skip switches room sizes (short vs. long primes). Flip reverses playback. Button freezes the buffer. Yellow is bit-crushed audio. Ash is audio at line level.  
 * **reverb\_spring**: An experimental spring reverb tank. Earth controls dampening. Flip is a latching switch for modulation speed (Surf vs. Lush). Skip freezes the buffer momentarily. Button is a latching freeze, during which skip is ignored. Yellow is bit-crushed audio.
 * **reverb\_granular**: A live granular processing mode. Earth controls grain size. Flip pitches the reverb an octave up (Shimmer). Skip momentarily freezes the buffer. Button is a latching freeze, during which skip is ignored. Yellow is bit-crushed audio.
-* **reverb\_feedbacker**: A feedback delay network reverb. Earth controls room size. A feedback delay network reverb. EARTH controls the room size. BUTTON is a feedback mode switch. SKIP is LFO modulation speed. FLIP is reverse reverb. ASH is wet audio out.
+* **reverb\_feedbacker**: A feedback delay network reverb. Earth controls room size. A feedback delay network reverb. EARTH controls the room size. Button is a feedback mode switch. Skip is LFO modulation speed. Flip is reverse reverb. Ash is wet audio out.
 * **resonator**: A 16-band sympathetic resonator. Earth controls the central pitch. Flip switches between Organ and Gong mode. Skip toggles an octave down. Patch audio or press the Button to ping/excite the resonator. Yellow is bit-crushed audio.
-* **harmonizer**: Pitch-tracking harmonizer generating 3 delay taps of over/under tones. Earth controls pitch tracking stability vs. LFO modulation. Flip switches between harmonics and sub-harmonics. Skip switches the prime math. Button parameter-locks all controls. Yellow is a stepped harmonic LFO.
+* **harmonizer**: Pitch-tracking harmonizing resonator generating 3 delay taps of over/under tones. Sounds like a Tambura when processing a sine wave when Earth is modulated. Earth controls pitch tracking stability vs. LFO modulation. Flip switches between harmonics and sub-harmonics. Skip switches the prime math. Button parameter-locks all controls. Yellow is a stepped harmonic LFO.
 
 ### **Live FX**
 
@@ -185,7 +185,7 @@ To prevent memory crashes while changing between 8-bit tape loops and 16-bit syn
 * Plus: External Sync preset modified to sync with another cafe module in coco_mod preset
 * Plus: coco_mod yellow clock out expanded for different PPQN settings
 
-### **Version 2.718**
+### **Version 2.71828**
 * New Preset: Tape Deck, an interface to save and recall loops in persistent memory, even across power cycles
 * Load a tape deck slot during power on instead of noise. Set up in Boot configuration below
 * New Preset: Window from Daniel Fishkin
@@ -193,4 +193,5 @@ To prevent memory crashes while changing between 8-bit tape loops and 16-bit syn
 * New Preset: Dissolve
 * New Preset: Feedback reverb
 * Added Crossfade from Peter's Firmware
-
+* Plus: Added crossfades for reverbs
+* Plus: Many under the hood improvements

@@ -25,11 +25,41 @@ void morph_to_8bit() {
         if (val_12bit < 0) val_12bit = 0;
         dellius(i, val_12bit, false); 
     }
+
+    // --- Cross fading the reverb tails ---
+    // The source loop is a shorter 16 bit loop that will be tiled into the larger buffer
+    // Crossfade the source loop from echo_mod into itself 
+    int tile_fade = 500; 
+    if (tile_fade > src_len / 2) tile_fade = src_len / 2; 
+
+    for (int i = 0; i < tile_fade; i++) {
+        int tail_raw = dellius(src_len - tile_fade + i, 0, true);
+        int head_raw = dellius(i, 0, true);
+        int mix_raw = ((tail_raw * (tile_fade - i)) + (head_raw * i)) / tile_fade;
+        dellius(i, mix_raw, false);
+    }
+
+    src_len -= tile_fade; // shrink the loop by the fade length
     
-    // Tile the Safe Zone across the rest of the buffer
-    for (int i = src_len; i < 131072; i++) {
+    // Fill up to the end of the buffer minus the fade length
+    int fade_len = 1000; // 1000 samples = ~20ms crossfade
+    if (fade_len > src_len) fade_len = src_len / 2; 
+    
+    int fade_start = 131072 - fade_len;
+
+    for (int i = src_len; i < fade_start; i++) {
         int val = dellius(i % src_len, 0, true);
         dellius(i, val, false);
+    }
+
+    // Full Loop Boundary Crossfade 
+    // Blend the very end of the 131k buffer back into the audio that precedes index 0
+    for (int i = 0; i < fade_len; i++) {
+        int write_pos = fade_start + i;
+        int tail_raw = dellius(write_pos % src_len, 0, true);
+        int head_precursor_raw = dellius(src_len - fade_len + i, 0, true);
+        int mix_raw = ((tail_raw * (fade_len - i)) + (head_precursor_raw * i)) / fade_len;
+        dellius(write_pos, mix_raw, false);
     }
     
     current_buffer_owner = 0;
@@ -40,19 +70,61 @@ void morph_to_16bit(int new_owner, int target_len) {
     if (current_buffer_owner == new_owner) return; 
     
     if (current_buffer_owner == 0) {
-        // Morphing from 8-bit Tape to 16-bit
-        // Read from 8-bit Safe Zone, convert to 16-bit AC, write to buffer_16bit
+        
+        int fade_len = 500;
+        if (fade_len > target_len / 2) fade_len = target_len / 2;
+
+        // STEP 0: CACHE THE PRECURSOR AUDIO
+        int16_t precursor_cache[500];
+        for (int i = 0; i < fade_len; i++) {
+            int precursor_idx = current_buffer_head - fade_len + i;
+            if (precursor_idx < 0) precursor_idx += 131072;
+            precursor_cache[i] = (int16_t)(dellius(precursor_idx, 0, true) - 2048);
+        }
+
+        // STEP 1: SAVE TO SCRATCHPAD
+        for (int i = 0; i < target_len; i++) {
+            int read_idx = (current_buffer_head + i) % 131072;
+            int val_12bit = dellius(read_idx, 0, true);
+            dellius(i, val_12bit, false); 
+        }
+
+        // STEP 2: UNPACK FROM SCRATCHPAD
         for (int i = 0; i < target_len; i++) {
             int val_12bit = dellius(i, 0, true);
             buffer_16bit[i] = (int16_t)(val_12bit - 2048); 
+        }
+
+        // STEP 3: PRECURSOR CROSSFADE
+        for (int i = 0; i < fade_len; i++) {
+            int tail_idx = target_len - fade_len + i;
+            int tail_val = buffer_16bit[tail_idx];
+            
+            // Use the preserved cache audio
+            buffer_16bit[tail_idx] = (int16_t)(((tail_val * (fade_len - i)) + (precursor_cache[i] * i)) / fade_len);
         }
     } 
     else {
         // Tile from a short 16-bit preset to a long 16-bit preset
         int src_len = current_buffer_len;
         if (src_len <= 0) src_len = 1;
+        
         for (int i = src_len; i < target_len; i++) {
             buffer_16bit[i] = buffer_16bit[i % src_len];
+        }
+        
+        int fade_len = 500;
+        if (fade_len > target_len / 2) fade_len = target_len / 2;
+        
+        for (int i = 0; i < fade_len; i++) {
+            int tail_idx = target_len - fade_len + i;
+            int tail_val = buffer_16bit[tail_idx];
+            
+            int precursor_idx = src_len - fade_len + i;
+            if (precursor_idx < 0) precursor_idx += src_len;
+            int precursor_val = buffer_16bit[precursor_idx];
+            
+            buffer_16bit[tail_idx] = (int16_t)(((tail_val * (fade_len - i)) + (precursor_val * i)) / fade_len);
         }
     }
     
@@ -63,124 +135,331 @@ void morph_to_16bit(int new_owner, int target_len) {
 //////BEGIN PRESETS//////////////////////////////////////////////////////////////////////////////////
 
 // ==========================================
-// 1. COCO - modified
+// COCO - modified
 // ==========================================
 // same as coco, just with changes below
 // yellow is a clock pulse
+// clock pulse defaults to 4ppqn with as assumed 4 quarter notes in the length of the buffer
+// clock pulse division may be changed below
 // earth is record on/off switch
 // ash is clean audio output
+// crossfades added to skip can be optional turned off below
+// optional high-pass filter, off by default
 
 void IRAM_ATTR coco_mod() {
 
-morph_to_8bit(); //needed for buffer translation
+    morph_to_8bit(); //needed for buffer translation
 
- //INTABRUPT
- //REG(GPIO_STATUS_W1TC_REG)[0]=0xFFFFFFFF; 
+    // --- LOCAL HIGHPASS CONFIGURATION ---
+    // Set to 'false' to pass raw ADC read directly to the buffer.
+    const bool ENABLE_HPF = false; 
+    
+    // Set your desired High-Pass Filter cutoff frequency in Hertz.
+    //   5.0 Hz = Deep Sub Bass
+    //  20.0 Hz = Flat, natural hearing
+    //  80.0 Hz = Remove mud
+    const float HPF_CUTOFF_HZ = 20.0;
 
- DACWRITER(pout)
- gyo=ADCREADER // Audio Input signal is read here
+    // --- AUDIO INPUT & HIGHPASS FILTER ---
+    int adc_val = ADCREADER;
+    int gyo_ac, gyo;
 
-// --- WAKE UP & BOOT SYNC ---
+    if (ENABLE_HPF) {
+        // The compiler automatically translates the Hz value into a 16-bit fractional multiplier
+        // Formula: (2 * PI * Fc / Fs) * 65536
+        const int32_t HPF_COEF = (int32_t)((6.2831853 * HPF_CUTOFF_HZ / 32000.0) * 65536.0);
+        
+        static int32_t dc_tracker = 2048 << 16;
+        
+        // 64-bit multiplication prevents overflow while maintaining 16-bit fractional precision
+        int32_t diff = (adc_val << 16) - dc_tracker;
+        dc_tracker += (int32_t)(((int64_t)diff * HPF_COEF) >> 16);
+        
+        gyo_ac = (int16_t)(adc_val - (dc_tracker >> 16)); 
+        gyo = gyo_ac + 2048; 
+    } else {
+        gyo_ac = adc_val - 2048; // Assume absolute perfect hardware center
+        gyo = adc_val;           // Pass raw voltage directly
+    }
+
+    static int skip_integrator = 0;
+    static int skip_latch = 0;
+    static int flip_integrator = 0;
+    static int flip_latch = 0;
+    static bool prev_hw_flip = false;
+    
+    static int unified_xfade = 0;
+    static int ghost_t = 0;
+    static bool ghost_flip = false; 
+    static bool crossfade_is_spatial = false; // Tracks if it was a Skip or a Flip
+    
+    static int prev_ghost_ac = 0;
+    static int prev_target_ac = 0; 
+
+    // --- WAKE UP & BOOT SYNC ---
     static bool is_first_run = true;
-    static bool last_frozen = false; //added memory state
-    static int smoothed_earth = -1;    // for Earth Smoothing 
-    if (is_first_run) {
+    static bool last_frozen = false; 
+    static int smoothed_earth = -1;    
+    static bool was_in_menu = false;
+    static int boot_fade = 0; 
+
+    if (preset_mode) {
+        was_in_menu = true;
+    } else if (was_in_menu || is_first_run) {
+        was_in_menu = false;
         is_first_run = false;
-        // Pre-read the Earth knob to anchor the state without toggling the lamp
+        
         if (EARTHREAD > TRIGGER_ON_THRESHOLD) {
             earth_last_state = 1;
         } else {
             earth_last_state = 0;
         }
+        
+        last_frozen = audio_frozen_state;
+        smoothed_earth = -1; 
+        boot_fade = 2400; 
+
+        bool s_raw = SKIPPERAT; // SYNC SKIP TO HARDWARE 
+        skip_integrator = s_raw ? 2000 : 0;
+        skip_latch = s_raw ? 1 : 0;
+        
+        bool f_raw = FLIPPERAT; // SYNC FLIP TO HARDWARE 
+        flip_integrator = f_raw ? 2000 : 0;
+        prev_hw_flip = f_raw; // Sync edge detector to current hardware resting state
+        flip_latch = 0;       // Defaults to forward playback
+        
+        unified_xfade = 0; // Clears any pending crossfades
     }
 
-// EARTHREAD SLEW
-// Needed to prevent false triggers 
-int raw_earth = EARTHREAD; 
+    // EARTHREAD SLEW 
+    int raw_earth = EARTHREAD; 
 
-if (smoothed_earth == -1) {
-    smoothed_earth = raw_earth; 
-} else {
-    smoothed_earth += (raw_earth - smoothed_earth) >> 4; // LPF
-}
-
-// HYSTERESIS (Using earth_cv)
- if (earth_last_state == 0) {
-     if (smoothed_earth > TRIGGER_ON_THRESHOLD) {
-         lamp = !lamp; 
-         audio_frozen_state = lamp;
-        if (lamp) { LAMP_ON; } 
-        else { LAMP_OFF; }
-         earth_last_state = 1; 
-     }
- } 
- else { 
-     if (smoothed_earth < TRIGGER_OFF_THRESHOLD) {
-         earth_last_state = 0; 
-     }
- }
-
- // CROSSFADE
- // Added as per Peter's crossfade
- //  This turns on the crossfade for the Button or Earth
- if (audio_frozen_state != last_frozen) {
-     last_frozen = audio_frozen_state;
-     TRIGGER_CROSSFADE(audio_frozen_state) // Trigger crossfade will trigger either xfado or yfado based on frozen state
- }
-
-
- pout=dellius(t,gyo,audio_frozen_state); //disabing lamp during preset selection to allow buffer transfer
- if (FLIPPERAT) t--; //inverted to make work with sampler based presets
- else t++; 
- t=t&0x1FFFF;
- if (SKIPPERAT)  {
-  if (lastskp==0) delayskp = t;
-  lastskp = 1;
- } else {
-  if (lastskp) t=delayskp;
-  lastskp = 0;
- } 
-
-
-ASHWRITER(pout); //Sends wet audio through ASH. Try swapping out with other Ashes
-
-//MODIFIED FIRMWARE
-
-// Set desired clock division (PPQN where the length of the buffer is considered 1 bar (4 quarter notes))
-// Use these options below: 13 (4 PPQN), 15 (1 PPQN), 17 (0.25 PPQN)
-// external_sync preset assumes 13 (4 PPQN) to sync together the buffers
-static uint8_t clock_shift = 13; 
-
-// Dynamically calculate the window and mask based on the shift
-uint32_t window_size = 1 << clock_shift;
-uint32_t clock_mask = window_size - 1;
-
-// --- YELLOW VARIABLE SYNC CLOCK ---
-// Send this to any clocked device
-// Try sending to Clicker as a metronome to play in time with the coco buffer
-if ((t & clock_mask) < 2000) { 
-    // if DOWNBEAT (checks if we are in the very first window of the buffer)
-    if (t < window_size) {
-        YELLOW_AUDIO(4095); // 3.3V accent
+    if (smoothed_earth == -1) {
+        smoothed_earth = raw_earth; 
     } else {
-        YELLOW_AUDIO(3000); // 2.4V clock
+        smoothed_earth += (raw_earth - smoothed_earth) >> 4; 
     }
-} else {
-    YELLOW_AUDIO(0); 
-}
 
-///////////END MODIFIED
- 
- // HEARTBEAT
- REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
- REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
- REG(I2S_CONF_REG)[0] |= (BIT(5)); //start rx 
+    // EARTH HYSTERESIS
+    // for Earth acting as a switch
+    if (earth_last_state == 0) {
+        if (smoothed_earth > TRIGGER_ON_THRESHOLD) {
+            lamp = !lamp; 
+            audio_frozen_state = lamp;
+            if (lamp) { LAMP_ON; } 
+            else { LAMP_OFF; }
+            earth_last_state = 1; 
+        }
+    } 
+    else { 
+        if (smoothed_earth < TRIGGER_OFF_THRESHOLD) {
+            earth_last_state = 0; 
+        }
+    }
+
+    // CROSSFADE
+    // Crossfades the loop point when switching from delay to loop mode
+    // Elimates the periodic click
+    if (audio_frozen_state != last_frozen) {
+        last_frozen = audio_frozen_state;
+        TRIGGER_CROSSFADE(audio_frozen_state); 
+    }
+
+    bool protect_tape = audio_frozen_state;
+    if (boot_fade > 0) {
+        protect_tape = true; 
+    }
+
+    // --- SKIP & FLIP CROSSFADE ---
+    const bool ENABLE_SMOOTH_SKIP = true;     // Set to 'false' for original coco behavior
+
+    if (!ENABLE_SMOOTH_SKIP) {
+        
+        if (SKIPPERAT) {
+            if (lastskp == 0) delayskp = t;
+            lastskp = 1;
+        } else {
+            if (lastskp) t = delayskp;
+            lastskp = 0;
+        }
+        pout = dellius(t, gyo, protect_tape);
+        
+        // ADVANCE MAIN PLAYHEAD
+        if (FLIPPERAT) t--; else t++; 
+        t &= 0x1FFFF;
+
+    } else {
+        // Shared crossfade length for both Skip and Flip jumps
+        // 100 samples (~2ms) for fast LFO rates
+        // 1000 samples (~20ms) for smooth 
+        const int TIMELINE_FADE_LEN = 100; 
+
+        // hardware debouncers
+        if (SKIPPERAT) {
+            if (skip_integrator < 2000) skip_integrator += 500; 
+        } else {
+            if (skip_integrator > 0) skip_integrator -= 50;     
+            if (skip_integrator < 0) skip_integrator = 0;       
+        }
+        
+        if (FLIPPERAT) {
+            if (flip_integrator < 2000) flip_integrator += 500; 
+        } else {
+            if (flip_integrator > 0) flip_integrator -= 50;     
+            if (flip_integrator < 0) flip_integrator = 0;       
+        }
+
+        // Timeline discontinuity detection
+        bool timeline_altered = false;
+        bool is_spatial_jump = false; 
+        int pre_jump_t = t;
+        bool pre_jump_flip = (flip_latch != 0);
+
+        // Check Skip 
+        if (skip_integrator > 1500)  {
+            if (skip_latch == 0) {
+                delayskp = t; 
+                skip_latch = 1;
+            }
+        } else if (skip_integrator < 100) {
+            if (skip_latch == 1) {
+                t = delayskp; 
+                skip_latch = 0;
+                timeline_altered = true;
+                is_spatial_jump = true; 
+            }
+        }
+
+        // Check Flip
+        bool current_hw_flip = prev_hw_flip;
+        if (flip_integrator > 1500) {
+            current_hw_flip = true;
+        } else if (flip_integrator < 100) {
+            current_hw_flip = false;
+        }
+        
+        // Sync Flip state to hardware
+        if (boot_fade > 0) {
+            // Sets playhead to forward movement on loading coco_mod
+            prev_hw_flip = current_hw_flip;
+        } 
+        // If Flip changes state, toggle the software direction
+        else if (current_hw_flip != prev_hw_flip) {
+            flip_latch = (flip_latch == 0) ? 1 : 0;
+            timeline_altered = true;
+            prev_hw_flip = current_hw_flip;
+        }
+        
+        bool active_flip = (flip_latch != 0);
+
+        // Trigger the crossfade
+        if (timeline_altered) {
+            ghost_t = pre_jump_t;           
+            ghost_flip = pre_jump_flip;     
+            unified_xfade = TIMELINE_FADE_LEN; 
+            crossfade_is_spatial = is_spatial_jump; 
+            
+            // Pre-read the splice points to seed the 1-sample crossfade caches
+            prev_ghost_ac = dellius(ghost_t, 2048, true) - 2048;
+            prev_target_ac = dellius(t, 2048, true) - 2048;
+        }
+
+        // SKIP & FLIP CROSSFADE LOGIC
+        if (unified_xfade > 0) {
+            
+            int fade_out = unified_xfade;
+            int fade_in = TIMELINE_FADE_LEN - unified_xfade;
+
+            // Fade the live audio OUT into the delayed buffer audio to smooth the jump-from point
+            int ghost_heal_ac = ((gyo_ac * fade_out) + (prev_ghost_ac * fade_in)) / TIMELINE_FADE_LEN;
+            int ghost_raw = dellius(ghost_t, ghost_heal_ac + 2048, protect_tape);
+            int ghost_ac = ghost_raw - 2048;
+            prev_ghost_ac = ghost_ac; // Cache for next sample
+            
+            int target_raw;
+            if (crossfade_is_spatial) {
+                // SKIP: Fade the delayed buffer audio OUT into the live audio to smooth the jump-to point
+                int target_heal_ac = ((gyo_ac * fade_in) + (prev_target_ac * fade_out)) / TIMELINE_FADE_LEN;
+                target_raw = dellius(t, target_heal_ac + 2048, protect_tape); 
+            } else {
+                // FLIP: Live audio is already continuous, write it natively
+                target_raw = dellius(t, gyo, protect_tape); 
+            }
+            int target_ac = target_raw - 2048;
+            prev_target_ac = target_ac; // Cache for next sample
+            
+            // Crossfade the above fades
+            int pout_ac = ((target_ac * fade_in) + (ghost_ac * fade_out)) / TIMELINE_FADE_LEN;
+            pout = pout_ac + 2048;
+            
+            // Advance the ghost playhead using its own snapshotted direction
+            if (ghost_flip) ghost_t--; else ghost_t++;
+            ghost_t &= 0x1FFFF; 
+            
+            unified_xfade--;
+            
+        } else {
+            pout = dellius(t, gyo, protect_tape);
+        }
+        
+        // ADVANCE MAIN PLAYHEAD 
+        // Utilizes the debounced flip logic to prevent playhead jitter
+        if (active_flip) t--; else t++; 
+        t &= 0x1FFFF;
+    }
+
+
+    // FADE-IN on boot or switching to coco_mod
+    if (boot_fade > 0) {
+        int ac_pout = pout - 2048; 
+        int gain = 2400 - boot_fade; 
+        
+        pout = ((ac_pout * gain) / 2400) + 2048; 
+        
+        boot_fade--; 
+    }
+
+    DACWRITER(pout); 
+    ASHWRITER(pout); 
+
+    //MODIFIED FIRMWARE
+    
+    // Set desired clock division (PPQN where the length of the buffer is considered 1 bar (4 quarter notes))
+    // Use these options below: 13 (4 PPQN), 15 (1 PPQN), 17 (0.25 PPQN)
+    // external_sync preset assumes 13 (4 PPQN) to sync together the buffers
+    static uint8_t clock_shift = 13; 
+    
+    // Dynamically calculate the window and mask based on the shift
+    uint32_t window_size = 1 << clock_shift;
+    uint32_t clock_mask = window_size - 1;
+    
+    // --- YELLOW VARIABLE SYNC CLOCK ---
+    // Send this to any clocked device
+    // Try sending to Clicker as a metronome to play in time with the coco buffer
+    if ((t & clock_mask) < 2000) { 
+        if (t < window_size) {
+            // checks if we are in the very first window of the buffer
+            YELLOW_AUDIO(4095); // 3.3V accent
+        } else {
+            YELLOW_AUDIO(3000); // 2.4V clock
+        }
+    } else {
+        YELLOW_AUDIO(0); 
+    }
+    
+    // Tells the OS where the loop is so transfers never grab silence
+    current_buffer_head = t;
+     
+    // HEARTBEAT
+    REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
+    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+    REG(I2S_CONF_REG)[0] |= (BIT(5)); //start rx 
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // ==========================================
-// 1.5 COCO ORIGINAL
+// COCO ORIGINAL
 // ==========================================
 // use to mimic the Cocoquantus v2
 // be sure to set the Boot Configuration to "true" for the startup noise
@@ -202,14 +481,22 @@ morph_to_8bit(); //needed for buffer translation
     static bool is_first_run = true;
     static bool last_frozen = false;
     static int smoothed_earth = -1;    // for Earth Smoothing 
-    if (is_first_run) {
+    static bool was_in_menu = false;
+
+    if (preset_mode) {
+        was_in_menu = true;
+    } else if (was_in_menu || is_first_run) {
+        was_in_menu = false;
         is_first_run = false;
+        
         // Pre-read the Earth knob to anchor the state without toggling the lamp
         if (EARTHREAD > TRIGGER_ON_THRESHOLD) {
             earth_last_state = 1;
         } else {
             earth_last_state = 0;
         }
+        
+        last_frozen = audio_frozen_state; // <-- THIS PREVENTS THE PHANTOM CROSSFADE
     }
 
 // EARTHREAD SLEW
@@ -269,6 +556,7 @@ YELLOW_BINARY(t)
  REG(I2S_CONF_REG)[0] |= (BIT(5)); //start rx 
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 ///////ORINGAL FIRMWARE
 int myNumbers[] = {32000, 31578, 22444, 25111};
@@ -298,20 +586,32 @@ void IRAM_ATTR echo_og() {
  //INTABRUPT
  //REG(GPIO_STATUS_W1TC_REG)[0]=0xFFFFFFFF; 
 
+morph_to_8bit(); // needed for buffer transfer
+
 // --- WAKE UP & BOOT SYNC ---
     static bool is_first_run = true;
     static bool last_frozen = false;
     static int smoothed_earth = -1; // for Earth Smoothing 
     static bool prev_skip = false; // Memory for our edge detector
+    static int fade_state = 0; //for crossfade of a frozen reverb
+    static int fade_timer = 0;
+    static bool was_in_menu = false;
 
-    if (is_first_run) {
+    if (preset_mode) {
+        was_in_menu = true;
+    } else if (was_in_menu || is_first_run) {
+        was_in_menu = false;
         is_first_run = false;
+        
         // Pre-read the Earth knob to anchor the state without toggling the lamp
         if (EARTHREAD > TRIGGER_ON_THRESHOLD) {
             earth_last_state = 1;
         } else {
             earth_last_state = 0;
         }
+        
+        last_frozen = audio_frozen_state; // Sync the freeze state
+        fade_state = 0;                   // Reset the fade state
     }
     
 // EARTHREAD SLEW
@@ -341,19 +641,53 @@ if (smoothed_earth == -1) {
  }
 
 // CROSSFADE
-// Added as per Peter's crossfade
-// This turns on the crossfade for the Button or Earth
- if (audio_frozen_state != last_frozen) {
-     last_frozen = audio_frozen_state;
-    TRIGGER_CROSSFADE(audio_frozen_state) // Trigger crossfade will trigger either xfado or yfado based on frozen state
- }
+// Added as per Peter's crossfade but modified for multitap
+    if (audio_frozen_state != last_frozen) {
+        last_frozen = audio_frozen_state;
+        fade_state = audio_frozen_state ? 1 : 2;
+        fade_timer = CROSSFADE;
+    }
 
  DACWRITER(pout)
  gyo=ADCREADER
  pout =0;
- for (int i=0; i<tapsz; i++) 
-  pout+=dellius((myPlacers[i]<<2)+i,gyo,lamp);
- pout = pout>>2;
+
+// --- DELAY TAPS ---
+    bool is_writing = (!audio_frozen_state || fade_state == 1);
+    int current_live_gain = audio_frozen_state ? 0 : CROSSFADE;
+
+    if (fade_state == 1 && fade_timer > 0) {
+        current_live_gain = fade_timer; // Fade out
+    } else if (fade_state == 2 && fade_timer > 0) {
+        current_live_gain = CROSSFADE - fade_timer; // Fade in
+    }
+
+    // --- 4-TAP FADES ---
+    for (int i=0; i<tapsz; i++) {
+        int ptr = (myPlacers[i]<<2)+i;
+        
+        if (is_writing) {
+            // Read buffer without erasing it
+            int tape_val = dellius(ptr, 0, true);
+            
+            // Mix live audio and buffer audio
+            int mixed_val = ((gyo * current_live_gain) + (tape_val * (CROSSFADE - current_live_gain))) >> CROSSBITE;
+            
+            // Write the mix back to buffer
+            pout += dellius(ptr, mixed_val, false);
+        } else {
+            // Read-only playback
+            pout += dellius(ptr, 0, true);
+        }
+    }
+    pout = pout >> 2;
+
+// Decrement timer outside the loop so it only counts down once per sample
+    if (fade_state > 0) {
+        fade_timer--;
+        if (fade_timer <= 0) fade_state = 0;
+    }
+
  if (FLIPPERAT)
   for (int i=0; i<tapsz; i++)  //sizeof(myPlacers)
    myPlacers[i]++;
@@ -444,29 +778,68 @@ void IRAM_ATTR echo_mod() {
         echo_head = 0;
     }
 
-    // --- WAKE UP & CALIBRATION GLOBALS ---
-    static int cal_min = 4095; 
-    static int cal_max = 0; 
+    // --- WAKE UP & BOOT SYNC ---
+    static int cal_min = 4095, cal_max = 0; 
     static bool knob_moved = false;
-    static int initial_earth = 0;
-    static int s_earth = -1;
-    static int boot_timer = 0;
-
+    static int initial_earth = 0, s_earth = -1, boot_timer = 0;
     static bool was_in_menu = false;
+    static bool is_first_run = true;
+    
+    // Freeze States
+    static bool last_frozen = false;
+    static int fade_state = 0, fade_timer = 0;
+    
+    // Skip States
+    static int skip_integrator = 0;
+    static bool prev_skip_stable = false, use_hall = false, prev_use_hall = false;
+    static int skip_fade_state = 0, skip_fade_timer = 0;
+    const int skip_fade_duration = 512;
+
+   // Flip States (Reverse & Crossfade)
+    static int flip_integrator = 0;
+    static bool flip_stable = false;
+    static bool prev_reverse = false;
+    static int flip_xfade = 0;
+    static int ghost_head = 0;        
+    static bool ghost_reverse = false; 
+    const int FLIP_FADE_LEN = 500; // ~10ms spatial crossfade
+    static int write_xfade = 0;
+
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         cal_min = 4095;
         cal_max = 0;
         s_earth = -1;
         knob_moved = false;
         boot_timer = 0;
+        last_frozen = audio_frozen_state;
+        fade_state = 0;
+
+        bool s_raw = SKIPPERAT;
+        skip_integrator = s_raw ? 300 : 0;
+        prev_skip_stable = s_raw;
+
+        prev_use_hall = SKIPPERAT;
+        use_hall = prev_use_hall;
+        skip_fade_state = 0;
+
+        // Sync Flip to resting hardware state
+        bool f_raw = FLIPPERAT;
+        flip_integrator = f_raw ? 300 : 0;
+        flip_stable = f_raw;
+        prev_reverse = f_raw;
+        flip_xfade = 0;
+        ghost_head = echo_head;
+        ghost_reverse = f_raw;
+        write_xfade = 0;
     }
 
     // INPUTS
     int raw_in = ADCREADER; 
-    int earth_cv = EARTHREAD; 
+    //int earth_cv = EARTHREAD; 
 
     // --- EARTH AUTO-CALIBRATION ---
     REG(APB_SARADC_SAR1_PATT_TAB1_REG)[0] = (0x0C<<24) | (0x6C<<16);
@@ -516,20 +889,104 @@ void IRAM_ATTR echo_mod() {
     
     // Write directly to the tape unfiltered
     int audio_write = echo_soft_limit(ac_in);
-    
-    // STATES
-    bool use_hall = SKIPPERAT; // 0 (False) = Chamber Default
-    bool reverse = FLIPPERAT;  // 0 (False) = Forward Default
+
+    // --- SKIP (LATCHING switch for Chamber/Hall) + CROSSFADE ---
+    bool skip_raw = SKIPPERAT;
+
+    // Debounce Integrator
+    if (skip_raw) { 
+        if (skip_integrator < 300) skip_integrator++; 
+    } else { 
+        if (skip_integrator > 0) skip_integrator -= 50; 
+    }
+
+    bool skip_stable = (skip_integrator > 250);
+
+    // Rising Edge Detector
+    if (skip_stable && !prev_skip_stable) {
+        skip_fade_state = 1; 
+        skip_fade_timer = skip_fade_duration; 
+    }
+    prev_skip_stable = skip_stable;
+
+   // --- FLIP ---
+    bool flip_raw = FLIPPERAT;
+    if (flip_raw) {
+        if (flip_integrator < 300) flip_integrator++;
+    } else {
+        if (flip_integrator > 0) flip_integrator--;
+    }
+    flip_stable = (flip_integrator > 250);
+
+    if (flip_stable != prev_reverse) {
+        flip_xfade = FLIP_FADE_LEN; 
+        write_xfade = FLIP_FADE_LEN;  
+
+        for (int i = 0; i < FLIP_FADE_LEN; i++) {
+            int scar_pos;
+            if (!prev_reverse) scar_pos = echo_head + 1 + i;
+            else               scar_pos = echo_head - 1 - i;
+            
+            while (scar_pos >= 20000) scar_pos -= 20000;
+            while (scar_pos < 0) scar_pos += 20000;
+            
+            // Apply a fade-out (0 at the boundary)
+            int fade_factor = (i * 256) / FLIP_FADE_LEN; 
+            buffer_16bit[scar_pos] = (buffer_16bit[scar_pos] * fade_factor) >> 8;
+        }
+
+        ghost_head = echo_head;         // Snapshot position of the write head
+        ghost_reverse = prev_reverse;   // Snapshot the old direction
+        prev_reverse = flip_stable;
+    }
+
+    bool reverse = flip_stable;
+
     bool freeze = audio_frozen_state;
+
+    int skip_mix_gain = 256; // Default to full volume
+
+    if (skip_fade_state == 1) {
+        // Fading Out
+        skip_mix_gain = (skip_fade_timer * 256) / skip_fade_duration;
+        skip_fade_timer--;
+        
+        if (skip_fade_timer <= 0) {
+            // Toggle while in silence
+            use_hall = !use_hall; 
+            
+            // fade back in
+            skip_fade_state = 2;
+            skip_fade_timer = skip_fade_duration;
+        }
+    } else if (skip_fade_state == 2) {
+        // Fading In
+        skip_mix_gain = ((skip_fade_duration - skip_fade_timer) * 256) / skip_fade_duration;
+        skip_fade_timer--;
+        
+        if (skip_fade_timer <= 0) {
+            skip_fade_state = 0; // Idle
+        }
+    }
+
+    // --- FREEZE CROSSFADE ---
+    if (freeze != last_frozen) {
+        last_frozen = freeze;
+        fade_state = freeze ? 1 : 2;
+        fade_timer = 256; 
+    }
 
     // 4-VOICE REVERB ENGINE
     int32_t mix_sum = 0;
+    int32_t ghost_sum = 0;
+    bool do_ghost = (flip_xfade > 0);
     
     for (int i=0; i<4; i++) {
         int delay_len;
         if (use_hall) delay_len = taps_hall[i];
         else delay_len = taps_chamber[i];
         
+        // 1. New Target Position (relative to actual echo_head)
         int read_pos;
         if (reverse) read_pos = echo_head + delay_len; 
         else         read_pos = echo_head - delay_len;
@@ -538,12 +995,73 @@ void IRAM_ATTR echo_mod() {
         while (read_pos >= 20000) read_pos -= 20000;
         
         mix_sum += buffer_16bit[read_pos];
+
+        // 2. Old Ghost Position (relative to independent ghost_head)
+        if (do_ghost) {
+            int ghost_pos;
+            if (ghost_reverse) ghost_pos = ghost_head + delay_len;
+            else               ghost_pos = ghost_head - delay_len;
+
+            while (ghost_pos < 0) ghost_pos += 20000;
+            while (ghost_pos >= 20000) ghost_pos -= 20000;
+            
+            ghost_sum += buffer_16bit[ghost_pos];
+        }
     }
-    
-    // Controls
-    if (!freeze) {
-        buffer_16bit[echo_head] = audio_write;
+
+    // Apply the Spatial Jump Crossfade
+    if (do_ghost) {
+        int fade_in = FLIP_FADE_LEN - flip_xfade;
+        int fade_out = flip_xfade;
+        mix_sum = ((mix_sum * fade_in) + (ghost_sum * fade_out)) / FLIP_FADE_LEN;
+        flip_xfade--;
+        
+        // Advance the independent ghost head!
+        if (ghost_reverse) ghost_head--;
+        else               ghost_head++;
+        
+        if (ghost_head >= 20000) ghost_head = 0;
+        if (ghost_head < 0) ghost_head = 19999;
     }
+
+    // Apply the Skip fade to the output of the reverb engine
+    mix_sum = (mix_sum * skip_mix_gain) >> 8;
+
+    // GAIN STAGING: 0 = 0%, 128 = 50%, 255 = 100%
+    int echo_gain = 225; // set to match RMS of coco_mod output level
+    mix_sum = (mix_sum * echo_gain) >> 8;
+
+    // --- WRITE & CROSSFADE ---
+    bool is_writing = (!freeze || fade_state == 1);
+    int current_live_gain = freeze ? 0 : 256;
+
+    if (fade_state == 1 && fade_timer > 0) {
+        current_live_gain = fade_timer; // Fading out
+    } else if (fade_state == 2 && fade_timer > 0) {
+        current_live_gain = 256 - fade_timer; // Fading in
+    }
+
+    if (is_writing) {
+        int16_t tape_val = buffer_16bit[echo_head]; // Old buffer audio
+        int16_t target_write = audio_write;         // live audio
+
+        // FADE IN FROM SILENCE ON FLIP 
+        if (write_xfade > 0) {
+            int fade_in = FLIP_FADE_LEN - write_xfade;
+            target_write = (target_write * fade_in) / FLIP_FADE_LEN;
+        }
+
+        // Apply freeze crossfades
+        int16_t mixed_val = (int16_t)(((target_write * current_live_gain) + (tape_val * (256 - current_live_gain))) >> 8);
+        buffer_16bit[echo_head] = mixed_val;
+    }
+
+    // Decrement timers outside the loop
+    if (fade_state > 0) {
+        fade_timer--;
+        if (fade_timer <= 0) fade_state = 0;
+    }
+    if (write_xfade > 0) write_xfade--; // Advance the crossfade timer
     
     if (reverse) echo_head--;
     else echo_head++;
@@ -568,6 +1086,12 @@ void IRAM_ATTR echo_mod() {
 
     // YELLOW is a bit crushed wet output
     YELLOW_AUDIO(pout);
+
+    t = echo_head; //sync playhead for switching out of echo_mod
+
+    // Tell morph_to_8bit where the oldest sample is 
+    // so it unrolls the tape linearly and places the seam at the edge
+    current_buffer_head = echo_head;
     
      // HEARTBEAT
     REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
@@ -909,6 +1433,23 @@ void IRAM_ATTR karplus() {
     
     // audio input 
     int audio_in = ADCREADER; 
+
+    // --- WAKE UP BLOCK ---
+    static bool was_in_menu = false;
+    static bool is_first_run = true;
+    
+    if (preset_mode) {
+        was_in_menu = true;
+    } else if (was_in_menu || is_first_run) {
+        was_in_menu = false;
+        is_first_run = false;
+        
+        // Sync edge detectors to prevent a phantom pluck on boot
+        skip_counter = 0;
+        skip_stable_low = false;
+        skip_stuck_timeout = 0;
+        trig_state = 0;
+    }
     
     // EARTH CV (Pitch)
     static int pyth_smart_earth = 0;
@@ -1040,12 +1581,6 @@ void IRAM_ATTR karplus() {
     int abs_vol = (ac_pout > 0) ? ac_pout : -ac_pout;
     
     karplus_lamp_env += (abs_vol - karplus_lamp_env) >> 4;
-    
-    // if (karplus_lamp_env > 100) {  // TO BE REPLACED BELOW FOR BUFFER TRANSFER
-    //     REG(GPIO_OUT1_W1TS_REG)[0] = BIT(1); 
-    // } else {
-    //     REG(GPIO_OUT1_W1TC_REG)[0] = BIT(1); 
-    // }
 
     if (karplus_lamp_env > 100) { LAMP_ON; } else { LAMP_OFF; }
     
@@ -1134,10 +1669,12 @@ void IRAM_ATTR resonator() {
 
     // --- WAKE UP BLOCK ---
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         
         // Sync flip and skip to prevent toggles on boot
         prev_skip_stable = SKIPPERAT;
@@ -1320,6 +1857,7 @@ void IRAM_ATTR reverb_spring() {
 
     // --- WAKE UP BLOCK ---
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     static bool button_locked = false;
     static bool skip_toggled = false;
     static bool last_frozen = false;
@@ -1341,8 +1879,9 @@ void IRAM_ATTR reverb_spring() {
 
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         
         // Inherit the OS state so buffer transfers remain frozen!
         last_frozen = audio_frozen_state;
@@ -1601,6 +2140,22 @@ void IRAM_ATTR reverb_granular() {
     static int skip_integrator = 0;
     static bool skip_gate = false;
     
+    // --- WAKE UP BLOCK ---
+    static bool was_in_menu = false;
+    static bool is_first_run = true;
+
+    if (preset_mode) {
+        was_in_menu = true;
+    } else if (was_in_menu || is_first_run) {
+        was_in_menu = false;
+        is_first_run = false;
+
+        // Sync skip jack to prevent phantom momentary freezes on boot
+        bool s_raw = SKIPPERAT;
+        skip_integrator = s_raw ? 2000 : 0;
+        skip_gate = s_raw;
+    }
+
     // ============================
     // CONTROLS
     // ============================
@@ -1759,85 +2314,92 @@ void IRAM_ATTR reverb_granular() {
 // ==========================================
 // HARMONIZER -- NEW PRESET
 // ==========================================
-// Harmonizer that uses pitch tracking to generate harmonic over/under tones.
+// Harmonizer is a pitch tracking resonator to generate harmonic over/under tones.
+// Sounds like an Indian Tambura when a sine input is modulated in Earth
 // Generates 3 delay taps based on harmonic ratios 
 // A sine wave will have harmonic tones added based on flip/skip settings
 // flip switches between harmonics (default) and subharmonics
 // skip switches primes that generate the sub/harmonics
 // earth controls pitch tracking: min (default) is clean tracking and increases LFO modulation towards max
-// button is a latching parameter lock which ignores flip, skip and earth while lamp is lit
+// button freeze the buffer to hold a steady feundamental phrase to which the effect is applied while lamp is lit
 // yellow is a stepped harmonic LFO in time with the buffer and three taps
 
-// BUFFER
-static int prism_head = 0;
-
-// PITCH TRACKING STATE
-static int prism_trk_val = 0;        // Low pass filter for tracking
-static int prism_trk_timer = 0;      // Counter for period length
-static int prism_stable_period = 400; // The detected pitch (in samples)
-static int32_t prism_period_fine = 400 << 8; // High-res pitch (Fixed Point)
-static bool prism_trk_state = false; // Zero-crossing state
-
-// FILTERS
-static int prism_input_dc = 2048; // DC Blocker state
-static int prism_loop_dc = 0;     // Saturation DC Blocker
-static int prism_out_lpf = 0;     // Smoothing output filter
-
-// EARTH LFO
-static int prism_shim_phase = 0;
-
-// BUTTON
-static bool prism_latch_active = false;
-static bool last_frozen = false;
-
-// Parameter Storage
-static bool f_majestic = false;
-static bool f_hell = false;
-static int f_earth_val = 0;
-
-// SATURATOR (Tanh)
-int16_t prism_tanh(int32_t x) {
-    if (x > 32000) return 32000;
-    if (x < -32000) return -32000;
-    if (x > -20000 && x < 20000) return (int16_t)x; // Linear region
-    if (x > 0) return 20000 + ((x - 20000) / 3);    // Soft knee positive
-    else return -20000 + ((x + 20000) / 3);         // Soft knee negative
+// --- HELPER FUNCTIONS ---
+int16_t harmonizer_soft_limit(int32_t x) {
+    if (x > 6000) return 2047;
+    if (x < -6000) return -2047;
+    if (x > -1500 && x < 1500) return (int16_t)x;
+    if (x > 0) return 1500 + ((x - 1500) / 3); 
+    else       return -1500 + ((x + 1500) / 3);
 }
 
-// READ HEAD
-// Handles wrapping and sub-sample interpolation
-int16_t prism_read(int32_t delay_fine) {
+int16_t prism_read(int32_t delay_fine, int current_head) {
     int32_t delay_int = delay_fine >> 8;
     int32_t frac = delay_fine & 0xFF; 
-    
-    // Calculate Read Position
-    int32_t pos_a = prism_head - delay_int;
-    
-    // Safety Wrap
+    int32_t pos_a = current_head - delay_int;
     while (pos_a < 0) pos_a += 24000;
     while (pos_a >= 24000) pos_a -= 24000;
-    
     int32_t pos_b = pos_a - 1; 
     if (pos_b < 0) pos_b += 24000;
-    
     int16_t val_a = buffer_16bit[pos_a];
     int16_t val_b = buffer_16bit[pos_b];
-    
-    // Linear Interpolation: val = A + (B-A)*frac
     int32_t mixed = (val_a * (256 - frac)) + (val_b * frac);
     return (int16_t)(mixed >> 8);
 }
 
 void IRAM_ATTR harmonizer() {
 
-    // --- WAKE UP BLOCK ---
+    // --- MIXER CONSOLE ---
+    const int MIX_TAP_1 = 255; // Octave
+    const int MIX_TAP_2 = 180; // 5th or 7th
+    const int MIX_TAP_3 = 120; // 3rd or 11th
+
+    // Master Volume Attenuation (0-256) 
+    // for level matching other presets
+    const int MASTER_VOL = 180;
+
+    // Internal Comb-Filter Resonance (0 = Dry, 235 = sustain, 255 = Infinite Oscillation)
+    const int INTERNAL_RESONANCE = 255; 
+
+    // --- STATE VARIABLES ---
+    static int prism_head = 0;
+    static int prism_trk_val = 0;         
+    static int prism_trk_timer = 0;       
+    static int prism_stable_period = 400; 
+    static int32_t prism_period_fine = 400 << 8; 
+    static bool prism_trk_state = false;  
+    static int prism_out_lpf = 0;         
+    static int prism_shim_phase = 0;
+    static bool prism_latch_active = false;
+    static bool last_frozen = false;
+    static int fade_state = 0;
+    static int fade_timer = 0;
+
     static bool was_in_menu = false;
+    static bool is_first_run = true;
+    static int flip_integrator = 0;
+    static bool prev_flip_stable = false;
+    static bool flip_latched = false;
+    static int skip_integrator = 0;
+    static bool prev_skip_stable = false;
+    static bool skip_latched = false;
+
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         last_frozen = audio_frozen_state;
         prism_latch_active = audio_frozen_state;
+        fade_state = 0;
+        
+        bool f_raw = FLIPPERAT;
+        flip_integrator = f_raw ? 2000 : 0;
+        prev_flip_stable = f_raw;
+        
+        bool s_raw = SKIPPERAT;
+        skip_integrator = s_raw ? 2000 : 0;
+        prev_skip_stable = s_raw;
     }
 
     if (current_buffer_owner != 4) {
@@ -1845,192 +2407,215 @@ void IRAM_ATTR harmonizer() {
         prism_head = 0;
     }
 
-    // ============================
-    // HARDWARE INPUTS & SNAPSHOTS
-    // ============================
     int audio_in = ADCREADER; 
     
-    // Read Pins
-    bool raw_btn = BUTTON_PRESSED;
-    bool raw_majestic = SKIPPERAT; // Skip Jack = Primes
-    bool raw_hell = FLIPPERAT;     // Flip Jack = Under/Over tones
+    // --- FLIP & SKIP DEBOUNCE ---
+    bool flip_raw = FLIPPERAT;
+    if (flip_raw) { if (flip_integrator < 2000) flip_integrator += 20; }
+    else          { if (flip_integrator > 0) flip_integrator -= 50; }
+    bool flip_stable = (flip_integrator > 1500);
+    if (flip_stable && !prev_flip_stable) flip_latched = !flip_latched;
+    prev_flip_stable = flip_stable;
+
+    bool skip_raw = SKIPPERAT;
+    if (skip_raw) { if (skip_integrator < 2000) skip_integrator += 20; }
+    else          { if (skip_integrator > 0) skip_integrator -= 50; }
+    bool skip_stable = (skip_integrator > 1500);
+    if (skip_stable && !prev_skip_stable) skip_latched = !skip_latched;
+    prev_skip_stable = skip_stable;
+
+    bool raw_majestic = skip_latched; 
+    bool raw_hell = flip_latched;     
     
-    // Read Earth CV
+    // --- EARTH CV ---
     static int s_earth = 0;
     REG(APB_SARADC_SAR1_PATT_TAB1_REG)[0] = (0x0C<<24) | (0x6C<<16);
     uint32_t fifo_data = REG(I2S_FIFO_RD_REG)[0];
     int channel = (fifo_data >> 12) & 0xF; 
     int value   = (fifo_data & 0xFFF);     
-    if (channel == 0) s_earth += (value - s_earth) >> 4; // Smoothing
+    if (channel == 0) s_earth += (value - s_earth) >> 4; 
     int raw_earth_val = (s_earth - 100);
     if (raw_earth_val < 0) raw_earth_val = 0;
 
-    // Button Latch Logic
     if (audio_frozen_state != last_frozen) {
         last_frozen = audio_frozen_state;
         prism_latch_active = audio_frozen_state;
+        fade_state = prism_latch_active ? 1 : 2;
+        fade_timer = 256;
     }
 
-    // LAMP
     if (prism_latch_active) { LAMP_ON; } else { LAMP_OFF; }
 
-    // Parameter Multiplexer
-    bool mode_majestic;
-    bool mode_hell;
-    int current_earth;
+    // Live Granular Interface (Real-time control routing)
+    bool mode_majestic = raw_majestic;
+    bool mode_hell = raw_hell;
+    int current_earth = raw_earth_val;
 
-    if (prism_latch_active) {
-        // Use Frozen Values
-        mode_majestic = f_majestic;
-        mode_hell = f_hell;
-        current_earth = f_earth_val;
-    } else {
-        // Use Live Values & Update Freeze Buffer
-        mode_majestic = raw_majestic;
-        mode_hell = raw_hell;
-        current_earth = raw_earth_val;
-        
-        f_majestic = raw_majestic;
-        f_hell = raw_hell;
-        f_earth_val = raw_earth_val;
-    }
+    int detune_depth = (current_earth * 1500) >> 12; 
 
-    int detune_depth = (current_earth * 1500) >> 12; // Scale Earth to Depth
-
-    // ============================
-    // PITCH TRACKING & LFO
-    // ============================
-
-    // Update LFO
     prism_shim_phase += 14; 
     if (prism_shim_phase > 4095) prism_shim_phase = 0;
     int lfo_tri = (prism_shim_phase > 2048) ? (4096 - prism_shim_phase) : prism_shim_phase;
     int lfo_signed = (lfo_tri << 1) - 2048;
 
-    // Input Filtering (Low Pass for better tracking)
-    prism_trk_val += (audio_in - prism_trk_val) >> 2; 
-    int ac_sig = prism_trk_val - 2048;
-    prism_trk_timer++;
+    // --- NODE 1: FAST INPUT STAGE ---
+    static int32_t prism_input_dc = 2048 << 6;
+    prism_input_dc += (audio_in - (prism_input_dc >> 6));
+    int16_t ac_in = (int16_t)(audio_in - (prism_input_dc >> 6));
     
-    // Zero Crossing Detector with Hysteresis
+    int32_t boosted_in = ac_in * 3;
+    if (boosted_in > 32000) boosted_in = 32000;
+    if (boosted_in < -32000) boosted_in = -32000;
+    
+    int16_t tape_val = buffer_16bit[prism_head];
+    int32_t track_source = prism_latch_active ? (tape_val * 3) : boosted_in;
+    
+    static int32_t tracker_lpf = 0;
+    tracker_lpf += (track_source - tracker_lpf) >> 3; 
+    
+    prism_trk_val += (tracker_lpf - prism_trk_val) >> 2; 
+    if (prism_trk_timer < 2000) prism_trk_timer++; 
+    
     if (!prism_trk_state) {
-        if (ac_sig > 60) { // Trigger High
+        if (prism_trk_val > 60) { 
             prism_trk_state = true;
-            // Valid Audio Range: 20 samples (2.2kHz) to 1600 samples (27Hz)
             if (prism_trk_timer > 20 && prism_trk_timer < 1600) {
-                // Hysteresis to reject noise
-                int diff = prism_trk_timer - prism_stable_period;
-                if (diff < 0) diff = -diff;
-                if (diff > 2) prism_stable_period = prism_trk_timer;
+                int trk_diff = prism_trk_timer - prism_stable_period;
+                if (trk_diff < 0) trk_diff = -trk_diff;
+                if (trk_diff > 2) prism_stable_period = prism_trk_timer;
             }
             prism_trk_timer = 0;
         }
     } else {
-        if (ac_sig < -60) prism_trk_state = false; // Trigger Low
+        if (prism_trk_val < -60) prism_trk_state = false; 
     }
 
-    // ============================
-    // ADAPTIVE INERTIA (Slew Limiting)
-    // ============================
     int32_t target_fine = prism_stable_period << 8;
-    if (mode_hell) {
-        // HELL MODE: Heavy Slew (>>11). 
-        // Multipliers amplify jitter, so need slow liquid movement
-        prism_period_fine += (target_fine - prism_period_fine) >> 11;
-    } else {
-        // HEAVEN MODE: Moderate Slew (>>9).
-        // Responsive tracking for divisors.
-        prism_period_fine += (target_fine - prism_period_fine) >> 9;
-    }
+    if (mode_hell) prism_period_fine += (target_fine - prism_period_fine) >> 11;
+    else           prism_period_fine += (target_fine - prism_period_fine) >> 9;
 
-    // ============================
-    // HARMONIC CALCULATOR
-    // ============================
-    int32_t len_a, len_b, len_c;
-    const int32_t MAX_LEN = 5632000; // 22,000 samples (Safe Ceiling)
+    int32_t target_len_a, target_len_b, target_len_c;
+    const int32_t MAX_LEN = 5632000; 
 
     if (mode_hell) {
-        // --- Sub-Harmonics ---
-        // Mystic: x2, x7, x11
-        // Majestic: x2, x3, x5
-        int m1 = 2;
-        int m2 = mode_majestic ? 3 : 7;
-        int m3 = mode_majestic ? 5 : 11;
-
-        len_a = prism_period_fine * m1;
-        len_b = prism_period_fine * m2;
-        len_c = prism_period_fine * m3;
-        
-        // STAGGERED CEILINGS
-        // Set voices to different maximums so they don't unison.
-        if (len_a > MAX_LEN) len_a = MAX_LEN;
-        if (len_b > MAX_LEN - 128000) len_b = MAX_LEN - 128000; // -500 samples
-        if (len_c > MAX_LEN - 256000) len_c = MAX_LEN - 256000; // -1000 samples
-
+        int m1 = 2; int m2 = mode_majestic ? 3 : 7; int m3 = mode_majestic ? 5 : 11;
+        target_len_a = prism_period_fine * m1; target_len_b = prism_period_fine * m2; target_len_c = prism_period_fine * m3;
+        if (target_len_a > MAX_LEN) target_len_a = MAX_LEN;
+        if (target_len_b > MAX_LEN - 128000) target_len_b = MAX_LEN - 128000; 
+        if (target_len_c > MAX_LEN - 256000) target_len_c = MAX_LEN - 256000; 
     } else {
-        // --- Upper Harmonics ---
-        // Mystic: /2, /7, /11
-        // Majestic: /2, /3, /5
-        int d1 = 2;
-        int d2 = mode_majestic ? 3 : 7;
-        int d3 = mode_majestic ? 5 : 11;
-
-        len_a = prism_period_fine / d1;
-        len_b = prism_period_fine / d2;
-        len_c = prism_period_fine / d3;
-        
-        // STAGGERED FLOORS
-        // Ensure voices clamp to different minimums so they don't unison.
-        if (len_a < 32) len_a = 32; 
-        if (len_b < 64) len_b = 64; 
-        if (len_c < 96) len_c = 96; 
+        int d1 = 2; int d2 = mode_majestic ? 3 : 7; int d3 = mode_majestic ? 5 : 11;
+        target_len_a = prism_period_fine / d1; target_len_b = prism_period_fine / d2; target_len_c = prism_period_fine / d3;
+        if (target_len_a < 32) target_len_a = 32; 
+        if (target_len_b < 64) target_len_b = 64; 
+        if (target_len_c < 96) target_len_c = 96; 
     }
 
-    // Apply Shimmer (Detune)
+    static int32_t current_len_a = 400 << 8;
+    static int32_t current_len_b = 400 << 8;
+    static int32_t current_len_c = 400 << 8;
+
+    current_len_a += (target_len_a - current_len_a) >> 10;
+    current_len_b += (target_len_b - current_len_b) >> 10;
+    current_len_c += (target_len_c - current_len_c) >> 10;
+
     int32_t mod_a = (lfo_signed * detune_depth) >> 4;
     int32_t mod_b = (-lfo_signed * detune_depth) >> 4; 
     int32_t mod_c = ((lfo_signed / 2) * detune_depth) >> 4; 
 
-    // ============================
-    // AUDIO IO
-    // ============================
+    int16_t samp_a = prism_read(current_len_a + mod_a, prism_head);
+    int16_t samp_b = prism_read(current_len_b + mod_b, prism_head);
+    int16_t samp_c = prism_read(current_len_c + mod_c, prism_head);
     
-    // Read Taps
-    int16_t samp_a = prism_read(len_a + mod_a);
-    int16_t samp_b = prism_read(len_b + mod_b);
-    int16_t samp_c = prism_read(len_c + mod_c);
+    // --- NODE 2: TAPE PRINT ---
+    static int32_t feedback_memory = 0; 
+    
+    // Headroom Padding: Drop resonance in mode_hell to prevent clipping from constructive stacking
+    int target_resonance = mode_hell ? 80 : INTERNAL_RESONANCE; 
+    static int32_t smooth_resonance = 150 << 8;
+    smooth_resonance += ((target_resonance << 8) - smooth_resonance) >> 8; 
+    
+    int32_t feedback_sig = (feedback_memory * (smooth_resonance >> 8)) >> 8;
+    int32_t resonant_in = ac_in + feedback_sig;
+    
+    int16_t clean_write = harmonizer_soft_limit(resonant_in);
+    
+    static int32_t prism_loop_dc = 0;
+    prism_loop_dc += ((clean_write << 12) - prism_loop_dc) >> 10; 
+    int16_t dc_clean_write = clean_write - (prism_loop_dc >> 12);
+    
+    bool is_writing = (!prism_latch_active || fade_state == 1);
+    int current_live_gain = prism_latch_active ? 0 : 256;
 
-    // Process Input & Write to Buffer
-    prism_input_dc += (audio_in - prism_input_dc) >> 10;
-    int16_t ac_in = (int16_t)(audio_in - prism_input_dc);
-    
-    // Soft Saturation before writing
-    int16_t sat_in = prism_tanh(ac_in);
-    prism_loop_dc += (sat_in - prism_loop_dc) >> 10; 
-    int16_t clean_write = sat_in - prism_loop_dc;
-    //prism_buffer[prism_head] = clean_write;
-    buffer_16bit[prism_head] = clean_write;
+    if (fade_state == 1 && fade_timer > 0) {
+        current_live_gain = fade_timer; 
+    } else if (fade_state == 2 && fade_timer > 0) {
+        current_live_gain = 256 - fade_timer; 
+    }
 
-    // Mix Output (100% Wet)
-    int32_t wet_mix = samp_a + samp_b + samp_c;
-    wet_mix = (wet_mix * 3600) >> 12; // Gain staging
-    prism_out_lpf += (wet_mix - prism_out_lpf) >> 1; // Smooth highs
+    if (is_writing) {
+        int16_t mixed_write = (int16_t)(((dc_clean_write * current_live_gain) + (tape_val * (256 - current_live_gain))) >> 8);
+        buffer_16bit[prism_head] = mixed_write;
+    }
+
+    if (fade_state > 0) {
+        fade_timer--;
+        if (fade_timer <= 0) fade_state = 0;
+    }
+
+    // --- NODE 3: WEIGHTED POLYPHONIC AVERAGE ---
+    int sum_weights = MIX_TAP_1 + MIX_TAP_2 + MIX_TAP_3;
+    int32_t wet_mix = ((samp_a * MIX_TAP_1) + (samp_b * MIX_TAP_2) + (samp_c * MIX_TAP_3)) / sum_weights;
     
-    int out = (prism_out_lpf >> 1) + 2048; 
+    feedback_memory = wet_mix; 
+    
+    // --- NODE 4: PEAK-TRACKING ENVELOPE FOLLOWER ---
+    int16_t dry_ref = prism_latch_active ? tape_val : ac_in;
+    int abs_ref = dry_ref; if (abs_ref < 0) abs_ref = -abs_ref;
+    int abs_wet = wet_mix; if (abs_wet < 0) abs_wet = -abs_wet;
+    
+    static int32_t env_ref = 0;
+    static int32_t env_wet = 0;
+    
+    // Fast Attack (physical peak tracking) & Slow Release (envelope)
+    if (abs_ref > env_ref) env_ref += (abs_ref - env_ref) >> 2; 
+    else                   env_ref += (abs_ref - env_ref) >> 10;
+    
+    if (abs_wet > env_wet) env_wet += (abs_wet - env_wet) >> 2; 
+    else                   env_wet += (abs_wet - env_wet) >> 10;
+    
+    static int32_t held_gain = 256;
+    
+    // Auto-Gain Control
+    if (env_ref > 50 && env_wet > 50) {
+        held_gain = (env_ref * MASTER_VOL) / env_wet;
+        if (held_gain > 1024) held_gain = 1024; 
+        if (held_gain < 64) held_gain = 64;     
+    }
+    
+    static int32_t smooth_gain = 256 << 8;
+    smooth_gain += ((held_gain << 8) - smooth_gain) >> 9; 
+    
+    int32_t wet_mix_gained = (wet_mix * (smooth_gain >> 8)) >> 8;
+    prism_out_lpf += (wet_mix_gained - prism_out_lpf) >> 1; 
+    
+    // --- NODE 5: SOFT LIMITER ---
+    int32_t mix_out = harmonizer_soft_limit(prism_out_lpf);
+    
+    int out = mix_out + 2048; 
     if (out > 4095) out = 4095;
     if (out < 0) out = 0;
 
-    pout = out;
-    CLEAN_ASHWRITER(pout); 
+    int pout = out;
+    
+    ASHWRITER(pout); 
     DACWRITER(pout);
     
-    // Yellow
-    // Stepped wave for syncing with tap positions as steps
-    // Use as modulation source
+    // --- VISUALS ---
     int y_val = 0;
-    int pos_a = (prism_head - (len_a>>8)); while(pos_a < 0) pos_a += 24000;
-    int pos_b = (prism_head - (len_b>>8)); while(pos_b < 0) pos_b += 24000;
-    int pos_c = (prism_head - (len_c>>8)); while(pos_c < 0) pos_c += 24000;
+    int pos_a = (prism_head - (current_len_a>>8)); while(pos_a < 0) pos_a += 24000;
+    int pos_b = (prism_head - (current_len_b>>8)); while(pos_b < 0) pos_b += 24000;
+    int pos_c = (prism_head - (current_len_c>>8)); while(pos_c < 0) pos_c += 24000;
     
     if (pos_a < 12000) y_val += 1300;
     if (pos_b < 12000) y_val += 1300;
@@ -2040,11 +2625,13 @@ void IRAM_ATTR harmonizer() {
 
     YELLOW_AUDIO(y_val); 
 
-    // Increment Write Head
+    // ADVANCE HEAD
     prism_head++;
     if (prism_head >= 24000) prism_head = 0;
 
-    // Audio Interrupt Reset
+    current_buffer_head = prism_head; 
+
+    // HEARTBEAT
     REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
     REG(I2S_INT_CLR_REG)[0]=0xFFFFFFFF;
     REG(I2S_CONF_REG)[0] |= (BIT(5)); 
@@ -2164,10 +2751,12 @@ void IRAM_ATTR saturator() {
 
     // WAKE UP BLOCK
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         last_frozen = audio_frozen_state;
         flip_was_high = FLIPPERAT;
         skip_was_high = SKIPPERAT;
@@ -2495,10 +3084,12 @@ void IRAM_ATTR external_sync() {
 
     // --- WAKE UP BLOCK ---
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         last_frozen = audio_frozen_state;
         is_frozen = audio_frozen_state; 
         skip_integrator = 0;
@@ -2803,6 +3394,8 @@ void IRAM_ATTR external_sync() {
 
     current_buffer_head = sync_head; // Update the OS with the tape splice location
 
+    t = sync_head; // Keep global playhead synced for exiting preset
+
     REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
     REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
     REG(I2S_CONF_REG)[0] |= (BIT(5)); 
@@ -3106,56 +3699,85 @@ void IRAM_ATTR scrambler() {
 // flip reverses the playback direction
 // yellow is a pulse at the end of buffer, can be used for patching a loop with skip
 
-#define PRE_ROLL_LEN 1000 
 #define FADE_LEN 1000     
 
 void IRAM_ATTR sampler() { 
 
-    morph_to_8bit(); //needed for buffer translation
+    morph_to_8bit(); 
 
     int audio_in = ADCREADER; 
     
+    // --- DC TRACKING & CLAMPING ---
+    static int32_t dc_sum = 2048 * 4096; 
+    dc_sum = dc_sum - (dc_sum >> 12) + audio_in;
+    int clean_audio = (audio_in - (dc_sum >> 12)) + 2048;
+
+    // Limiter to prevent possible static from transient spikes wrapping 8-bit math
+    if (clean_audio > 4095) clean_audio = 4095;
+    if (clean_audio < 0) clean_audio = 0;
+
     // --- STATES ---
-    static int skip_integrator = 0;
-    static int skip_latch = 0;
-    static int btn_latch = 0;
-    static int btn_timer = 0;
+    static int skip_integrator = 2000;
+    static int skip_latch = 1;
+    
+    static int flip_integrator = 2000;
+    static int flip_latch = 1;
+    static bool flip_is_reverse = false; 
     
     static int yellow_pulse_timer = 0;
     static int latched_start = 0; 
 
-    // --- WAKE UP BLOCK --- // NEEDED FOR BUFFER TRANSFER
+    // Audio Engine State
+    static bool system_mode = true; // True = Play, False = Record
+    static bool last_system_mode = true; 
+    static bool last_frozen = false;
+
+    static bool is_active = false;
+    static int offset = 0; 
+    static bool one_shot_locked = false; 
+    static bool current_action_is_play = true;
+    static int play_timer = 0;
+
+    // Virtual Tape Stop State
+    static bool is_stopping = false;
+    static int rec_stop_timer = 0;
+
+    // Crossfade State
+    static bool tail_active = false;
+    static int tail_offset = 0;
+    static int tail_timer = 0; 
+    static bool tail_is_reverse = false;
+
+    // --- WAKE UP BLOCK --- 
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true; 
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
-        system_mode = true;  
+        is_first_run = false;
+        
+        system_mode = true; 
+        last_system_mode = true;
+        last_frozen = audio_frozen_state;
+        
+        bool s_raw = SKIPPERAT;
+        skip_integrator = s_raw ? 2000 : 0;
+        skip_latch = s_raw ? 1 : 0;
+        
+        bool f_raw = FLIPPERAT;
+        flip_integrator = f_raw ? 2000 : 0;
+        flip_latch = f_raw ? 1 : 0;
+        
         is_active = false;   
-        btn_timer = 20000;   // Lockout the button for 0.5s to prevent unfreezing sample
-        skip_integrator = 0; // Dump any floating noise on skip pin
+        tail_active = false;
+        one_shot_locked = false;
+        is_stopping = false;
     }
-
-    static int master_vol = 0; 
-    static bool retrigger_pending = false; 
-
-    // FLIP LATCH STATE
-    static int flip_integrator = 0;
-    static bool flip_is_reverse = false; 
-    static bool flip_gate_active = false; 
-
-    // PRE-ROLL
-    // static int16_t pre_roll[PRE_ROLL_LEN]; //replaced below to use specified memory pool to avoid memory fragmentation
-    #define pre_roll ((int16_t *)preset_volatile_pool)
-    static int pr_head = 0;
-
-
 
     // --- INPUTS ---
     int earth_raw = EARTHREAD;
 
-    // --- EARTH CALIBRATION ---
-    // optimized for quantum 2-6V
     int constrained_earth = earth_raw;
     if (constrained_earth < 56) constrained_earth = 56;
     if (constrained_earth > 160) constrained_earth = 160;
@@ -3163,199 +3785,282 @@ void IRAM_ATTR sampler() {
 
     // --- CONTROLS ---
 
-    // BUTTON 
-    // Press to change between play/record mode
-    if (BUTTON_PRESSED) {
-        if (btn_latch == 0 && btn_timer == 0) {
-            system_mode = !system_mode; 
-            btn_latch = 1;
-            btn_timer = 5000; 
+    // BUTTON (OS Freeze tied to prevent long-press overwrites)
+    if (audio_frozen_state != last_frozen) {
+        last_frozen = audio_frozen_state;
+        system_mode = !system_mode; 
+    }
+
+    // MODE CHANGE LOGIC
+    if (system_mode != last_system_mode) {
+        last_system_mode = system_mode;
+        
+        // Manual Tape Abort (Button pressed mid-record)
+        if (system_mode && !current_action_is_play && is_active && !is_stopping) {
+            is_stopping = true;
+            rec_stop_timer = FADE_LEN;
         }
-    } else {
-        btn_latch = 0;
-    }
-    if (btn_timer > 0) btn_timer--;
-
-    // SKIP (Trigger to Record/Play)
-    if (SKIPPERAT) {
-        if (skip_integrator < 2000) skip_integrator += 20;
-    } else {
-        if (skip_integrator > 0) skip_integrator -= 50; 
-        if (skip_integrator < 0) skip_integrator = 0;
+        
+        bool s_raw = SKIPPERAT;
+        skip_integrator = s_raw ? 2000 : 0;
+        skip_latch = s_raw ? 1 : 0;
+        
+        bool f_raw = FLIPPERAT;
+        flip_integrator = f_raw ? 2000 : 0;
+        flip_latch = f_raw ? 1 : 0;
     }
 
-    bool trigger_event = false;
+    // SKIP 
+    if (SKIPPERAT) { if (skip_integrator < 2000) skip_integrator += 20; }
+    else           { if (skip_integrator > 0) skip_integrator -= 50; }
+
+    bool skip_rising = false;
     if (skip_integrator > 1500) {
-        if (skip_latch == 0) {
-            trigger_event = true;
-            skip_latch = 1;
+        if (skip_latch == 0) { skip_rising = true; skip_latch = 1; }
+    } else if (skip_integrator < 100) { skip_latch = 0; }
+
+    // FLIP
+    if (FLIPPERAT) { if (flip_integrator < 2000) flip_integrator += 20; } 
+    else           { if (flip_integrator > 0) flip_integrator -= 50; }
+
+    bool direction_changed = false;
+    bool flip_stable = (flip_integrator > 1500); 
+    
+    if (flip_stable && !flip_latch) {
+        flip_latch = 1; 
+        
+        // Block reversing while recording tape
+        if (system_mode || !is_active || current_action_is_play) {
+            flip_is_reverse = !flip_is_reverse; 
+            direction_changed = true;
         }
-    } else if (skip_integrator < 100) {
-        skip_latch = 0;
+    } else if (flip_integrator < 100) {
+        flip_latch = 0; 
     }
-
-    // FLIP (reverse playback)
-    if (FLIPPERAT) { if (flip_integrator < 2000) flip_integrator += 10; } 
-    else           { if (flip_integrator > 0) flip_integrator -= 10; }
-
-    bool current_flip_gate = (flip_integrator > 1500); 
-    if (current_flip_gate && !flip_gate_active) {
-        flip_is_reverse = !flip_is_reverse; 
-        flip_gate_active = true; 
-    } 
-    else if (flip_integrator < 500) {
-        flip_gate_active = false; 
-    }
-
 
     // --- STATE MACHINE ---
+    bool trigger_valid = false;
+    
+    if (skip_rising) {
+        if (!one_shot_locked) {
+            trigger_valid = true;
+        }
+    }
 
-    if (trigger_event) {
+    // Block retriggers while recording 
+    if (!current_action_is_play && is_active) {
+        trigger_valid = false;
+    }
+
+    // Prevent instantaneous playback jumps while a punch-out fade is rendering
+    if (is_stopping) {
+        trigger_valid = false;
+    }
+
+    if (trigger_valid) {
         latched_start = calculated_start;
 
-        if (!is_active) {
-            // START
-            is_active = true;
-            current_action_is_play = system_mode;
-            
-            if (current_action_is_play) {
-                // PLAY START
-                if (!flip_is_reverse) {
-                    offset = latched_start;
-                } else {
-                    offset = (SAMPLE_LEN - 1) - latched_start;
+        bool old_action_was_play = (current_action_is_play && is_active);
+        bool old_action_was_record = (!current_action_is_play && is_active);
+        current_action_is_play = system_mode;
+        
+        if (!current_action_is_play) {
+            // RECORD START
+            if (old_action_was_play) {
+                int outgoing_timer = (play_timer < FADE_LEN) ? play_timer : FADE_LEN;
+                
+                // LOUDEST-TAKES-PRECEDENCE: Only overwrite the tail if the new audio is louder
+                if (!tail_active || outgoing_timer > tail_timer) {
+                    tail_active = true;
+                    tail_offset = offset;
+                    tail_is_reverse = flip_is_reverse;
+                    tail_timer = outgoing_timer;
                 }
             } else {
-                // RECORD START
-                int r_idx = pr_head; 
-                for(int i = 0; i < PRE_ROLL_LEN; i++) {
-                    dellius(i, pre_roll[r_idx], false);
-                    r_idx++;
-                    if (r_idx >= PRE_ROLL_LEN) r_idx = 0;
-                }
-                offset = PRE_ROLL_LEN;
+                tail_active = false;
             }
-            master_vol = 0; 
-            retrigger_pending = false;
-
-        } else {
-            // RETRIGGER
-            retrigger_pending = true;
+            
+            is_active = true;
+            offset = 0;
+        } 
+        else {
+            // PLAY START
+            if (is_active) {
+                int outgoing_timer = old_action_was_record ? FADE_LEN : ((play_timer < FADE_LEN) ? play_timer : FADE_LEN);
+                
+                // LOUDEST-TAKES-PRECEDENCE
+                if (!tail_active || outgoing_timer > tail_timer) {
+                    tail_active = true;
+                    tail_offset = offset;
+                    if (old_action_was_record) tail_is_reverse = false;
+                    else tail_is_reverse = flip_is_reverse; 
+                    tail_timer = outgoing_timer; 
+                }
+            }
+            
+            is_active = true;
+            if (!flip_is_reverse) offset = latched_start;
+            else offset = (SAMPLE_LEN - 1) - latched_start;
+            
+            play_timer = 0; 
+            direction_changed = false; // Consume direction jump
         }
+    }
+
+    // --- FLIP CROSSFADE ---
+    if (direction_changed && is_active && current_action_is_play) {
+        int outgoing_timer = (play_timer < FADE_LEN) ? play_timer : FADE_LEN;
+        
+        // LOUDEST-TAKES-PRECEDENCE
+        if (!tail_active || outgoing_timer > tail_timer) {
+            tail_active = true;
+            tail_offset = offset;
+            tail_is_reverse = !flip_is_reverse; // Snapshot the OLD direction to fade out
+            tail_timer = outgoing_timer;
+        }
+        
+        play_timer = 0; // Reset main timer for reversed fade-in
+    }
+
+    // --- UNIVERSAL TAIL CROSSFADER ---
+    int32_t tail_mix = 0;
+    if (tail_active) {
+        int raw = dellius(tail_offset, 0, true);
+        
+        int tail_gain = (tail_timer * 256) / FADE_LEN;
+        
+        int distance_to_end = (!tail_is_reverse) ? (SAMPLE_LEN - tail_offset) : tail_offset;
+        int win_gain = 256;
+        if (distance_to_end < FADE_LEN) win_gain = (distance_to_end * 256) / FADE_LEN;
+        
+        int final_gain = (tail_gain * win_gain) >> 8;
+        tail_mix = ((raw - 2048) * final_gain) >> 8;
+
+        if (!tail_is_reverse) tail_offset++;
+        else tail_offset--;
+        
+        if (tail_offset >= SAMPLE_LEN || tail_offset < 0) tail_active = false;
+        
+        tail_timer--;
+        if (tail_timer <= 0) tail_active = false;
     }
 
     int output_sample = 2048; 
 
-    // PROCESS EVENT
-    if (is_active) {
+    // --- PROCESS AUDIO ---
+    
+    // A. RECORD MODE
+    if (!current_action_is_play && is_active) {
         
-        // --- DUCKING (for clicks) ---
-        if (retrigger_pending) {
-            master_vol -= 8; 
-            if (master_vol <= 0) {
-                master_vol = 0;
-                if (current_action_is_play) {
-                     if (!flip_is_reverse) offset = latched_start;
-                     else                  offset = (SAMPLE_LEN - 1) - latched_start;
-                } else {
-                    offset = 0; 
-                }
-                retrigger_pending = false;
-            }
-        } else {
-            if (master_vol < 256) master_vol += 8; 
+        // --- TAPE PUNCH-IN & PUNCH-OUT CROSSFADE ---
+        int rec_gain = 256;
+        if (offset < FADE_LEN) {
+            rec_gain = (offset * 256) / FADE_LEN; 
+        } else if (offset > (SAMPLE_LEN - FADE_LEN)) {
+            rec_gain = ((SAMPLE_LEN - offset) * 256) / FADE_LEN; 
         }
-
-        // PLAYBACK
-        if (current_action_is_play) {
-            int raw_audio = dellius(offset, 0, true);
-            int pos_gain = 256;
-            
-            // --- SYMMETRICAL FADES ---
-            if (!flip_is_reverse) {
-                // FORWARD
-                if (offset < (latched_start + FADE_LEN)) {
-                    if (offset >= latched_start) 
-                        pos_gain = ((offset - latched_start) * 256) / FADE_LEN;
-                }
-                else if (offset > (SAMPLE_LEN - FADE_LEN)) {
-                    pos_gain = ((SAMPLE_LEN - offset) * 256) / FADE_LEN;
-                }
-            } else {
-                // REVERSE
-                int r_start = (SAMPLE_LEN - 1) - latched_start;
-                if (offset > (r_start - FADE_LEN)) {
-                    if (offset <= r_start)
-                        pos_gain = ((r_start - offset) * 256) / FADE_LEN;
-                }
-                else if (offset < FADE_LEN) {
-                    pos_gain = (offset * 256) / FADE_LEN;
-                }
-            }
-            
-            int total_gain = (pos_gain * master_vol) >> 8;
-            int signal_ac = raw_audio - 2048;
-            output_sample = ((signal_ac * total_gain) >> 8) + 2048;
-
-            // --- MOVEMENT ---
-            // for flipping around earth in flip mode
-            if (!flip_is_reverse) { 
-                offset++; 
-                if (offset >= SAMPLE_LEN) {
-                    if (!retrigger_pending) { is_active = false; yellow_pulse_timer = 3000; }
-                }
-            } else {
-                offset--; 
-                if (offset < 0) {
-                    if (!retrigger_pending) { is_active = false; yellow_pulse_timer = 3000; }
-                }
-            }
-        } 
         
-        // RECORDING
-        else {
-            output_sample = audio_in; 
-            dellius(offset, audio_in, false); 
+        if (is_stopping) {
+            int stop_gain = (rec_stop_timer * 256) / FADE_LEN;
+            if (stop_gain < rec_gain) rec_gain = stop_gain; 
             
-            offset++;
-            if (offset >= SAMPLE_LEN) {
-                is_active = false; 
-                yellow_pulse_timer = 3000; 
+            rec_stop_timer--;
+            if (rec_stop_timer <= 0) {
+                is_stopping = false;
+                is_active = false;
+                yellow_pulse_timer = 3000;
             }
         }
-    } else {
-        master_vol = 0;
         
-        if (!system_mode) {
-            pre_roll[pr_head] = audio_in;
-            pr_head++;
-            if (pr_head >= PRE_ROLL_LEN) pr_head = 0;
+        int final_write = clean_audio;
+        
+        if (rec_gain < 256) {
+            int old_audio = dellius(offset, 0, true);
+            int ac_live = clean_audio - 2048;
+            int ac_old = old_audio - 2048;
+            
+            int ac_mix = ((ac_live * rec_gain) + (ac_old * (256 - rec_gain))) >> 8;
+            final_write = ac_mix + 2048;
+        }
+
+        dellius(offset, final_write, false);
+        
+        // --- MONITOR FADE + TAIL MIX ---
+        int ac_live_mon = clean_audio - 2048;
+        int mon_out = (ac_live_mon * rec_gain) >> 8;
+        
+        output_sample = mon_out + tail_mix + 2048;
+        
+        offset++;
+        if (offset >= SAMPLE_LEN) {
+            is_active = false; 
+            is_stopping = false; 
+            yellow_pulse_timer = 3000; 
+
+            // --- AUTO-REVERT TO PLAY MODE ---
+            system_mode = true;
+            last_system_mode = true;
+            current_action_is_play = true;
         }
     }
+    
+    // B. PLAY MODE
+    else if (current_action_is_play && is_active) {
+        int raw = dellius(offset, 0, true);
+        
+        int attack_gain = 256;
+        if (play_timer < FADE_LEN) attack_gain = (play_timer * 256) / FADE_LEN;
+        
+        int release_gain = 256;
+        int distance_to_end = (!flip_is_reverse) ? (SAMPLE_LEN - offset) : offset;
+        if (distance_to_end < FADE_LEN) release_gain = (distance_to_end * 256) / FADE_LEN;
+        
+        int pos_gain = (attack_gain * release_gain) >> 8;
+        int32_t main_mix = ((raw - 2048) * pos_gain) >> 8;
+
+        if (!flip_is_reverse) offset++;
+        else offset--;
+        
+        play_timer++; 
+        
+        if (offset >= SAMPLE_LEN || offset < 0) {
+            is_active = false;
+            yellow_pulse_timer = 3000; 
+        }
+
+        output_sample = main_mix + tail_mix + 2048;
+    }
+    
+    // C. IDLE MODE
+    else {
+        output_sample = tail_mix + 2048;
+    }
+
+    if (output_sample > 4095) output_sample = 4095;
+    if (output_sample < 0) output_sample = 0;
 
     // --- LAMP VISUALS ---
-    // Off = Armed for Recording
-    // Strobe = Recording
-    // Solid = Playback mode
     if (is_active) {
         if (current_action_is_play) {
-            LAMP_ON; // Playing = Solid
+            LAMP_ON; 
         } else {
-            // Recording = Strobe
-            if ((offset >> 13) & 1) LAMP_ON; else LAMP_OFF;
+            if ((offset >> 13) & 1) LAMP_ON; else LAMP_OFF; 
         }
     } else {
-        if (system_mode) LAMP_ON;  // Play Standby
-        else             LAMP_OFF; // Rec Standby
+        if (system_mode) {
+            LAMP_ON; 
+        } else {
+            static int idle_counter = 0;
+            idle_counter++;
+            if ((idle_counter >> 14) & 1) LAMP_ON; else LAMP_OFF; 
+        }
     }
 
-    // OUTPUTS
+    // --- OUTPUTS ---
     pout = output_sample;
     ASHWRITER(pout); 
     DACWRITER(pout);
     
-    // YELLOW
-    // end of buffer trigge
     if (yellow_pulse_timer > 0) {
         YELLOW_PULSE(4095);
         yellow_pulse_timer--;
@@ -3370,20 +4075,20 @@ void IRAM_ATTR sampler() {
 
 //////////////////////////////////////////////////////////////////////////////////////////END/////////////////////
 
-// // ==========================================
-// // MULTI-SLICE SAMPLER - NEW PRESET
-// // ==========================================
-// // based on the one-shot sampler
-// // the buffer is divided into 4 segments
-// // earth selects the segment of the buffer
-// // stack antenna cv into earth
-// // use patterns of antenna touching to select buffer segment
-// // lamp shows which segment is selected (1-4) while in record mode
-// // button toggles between record and playback mode
-// // skip triggers a one shot record/playback and can be retriggered
-// // flip triggers a one shot playback that cannot be re-triggered
-// // ash is the wet audio at line level
-// // yellow is the end of slice trigger
+// ==========================================
+// MULTI-SLICE SAMPLER - NEW PRESET
+// ==========================================
+// based on the one-shot sampler
+// the buffer is divided into 4 segments
+// earth selects the segment of the buffer
+// stack antenna cv into earth
+// use patterns of antenna touching to select buffer segment
+// lamp shows which segment is selected (1-4) while in record mode
+// button toggles between record and playback mode
+// skip triggers a one shot record/playback and can be retriggered
+// flip triggers a one shot playback that cannot be re-triggered
+// ash is the wet audio at line level
+// yellow is the end of slice trigger
 
 #define S4_TOTAL 131000 
 #define S4_CNT 4
@@ -3394,11 +4099,11 @@ void IRAM_ATTR sampler() {
 #define TRIM_THRESH 80   
 #define PRE_BREATH  500  
 
-// Thresholds
-#define T_1_2  69
-#define T_2_3  108
-#define T_3_4  134
-#define HYST   5 
+// Symmetrical Quartile Thresholds (Normalized 0-255 scale)
+#define T_1_2  64
+#define T_2_3  128
+#define T_3_4  192
+#define HYST   8 
 
 static int32_t s4_earth_acc = 0; 
 static int32_t dc_sum = 2048 * 4096; 
@@ -3410,27 +4115,39 @@ void IRAM_ATTR sampler_4x() {
 
     int audio_in = ADCREADER; 
     
-    // DC Tracking
+    // --- DC TRACKING & CLAMPING ---
     dc_sum = dc_sum - (dc_sum >> 12) + audio_in;
     int clean_audio = (audio_in - (dc_sum >> 12)) + 2048;
+
+    if (clean_audio > 4095) clean_audio = 4095;
+    if (clean_audio < 0) clean_audio = 0;
 
     // --- STATES ---
     static int skip_integrator = 2000;
     static int skip_latch = 1;
+    
     static int flip_integrator = 2000;
     static int flip_latch = 1;
 
     static int yellow_pulse_timer = 0;
 
-    // Audio State
+    // Audio Engine State
     static bool is_active = false;
     static int offset = 0; 
+    static bool system_mode = true; 
     static bool last_system_mode = true; 
+    static bool last_frozen = false;
+
     static bool one_shot_locked = false; 
+    static bool current_action_is_play = true;
+    static int play_timer = 0;
+
+    // Virtual Tape Stop State
+    static bool is_stopping = false;
+    static int rec_stop_timer = 0;
 
     // Auto-Cue State
     static bool detection_armed = false; 
-    static int play_timer = 0;           
 
     // Slice State
     static int current_slice = 0;   
@@ -3442,12 +4159,64 @@ void IRAM_ATTR sampler_4x() {
     static int tail_slice = 0;
     static int tail_timer = 0; 
 
-    // --- INPUTS ---
-    int earth_raw = EARTHREAD;
+    // Calibration
+    static int s_earth = -1;
+
+    // --- WAKE UP BLOCK ---
+    static bool was_in_menu = false;
+    static bool is_first_run = true;
+
+    if (preset_mode) {
+        was_in_menu = true;
+    } else if (was_in_menu || is_first_run) {
+        was_in_menu = false;
+        is_first_run = false;
+        
+        system_mode = true; 
+        last_system_mode = true;
+        last_frozen = audio_frozen_state;
+        
+        bool s_raw = SKIPPERAT;
+        skip_integrator = s_raw ? 2000 : 0;
+        skip_latch = s_raw ? 1 : 0;
+        
+        bool f_raw = FLIPPERAT;
+        flip_integrator = f_raw ? 2000 : 0;
+        flip_latch = f_raw ? 1 : 0;
+
+        is_active = false;
+        tail_active = false;
+        one_shot_locked = false;
+        is_stopping = false;
+        
+        s_earth = -1;
+    }
+
+    // --- EARTH CALIBRATION & ADC ---
+    REG(APB_SARADC_SAR1_PATT_TAB1_REG)[0] = (0x0C<<24) | (0x6C<<16);
+    uint32_t fifo_data = REG(I2S_FIFO_RD_REG)[0];
+    int channel = (fifo_data >> 12) & 0xF; 
+    int value   = (fifo_data & 0xFFF);     
     
-    // EARTH SMOOTHING 
-    int32_t target = earth_raw << 8;
-    s4_earth_acc += (target - s4_earth_acc) >> 6;
+    if (channel == 0) {
+        if (s_earth == -1) s_earth = value;
+        else s_earth += (value - s_earth) >> 4;
+    }
+
+    // HARDCODED HARDWARE BOUNDARIES BASED ON EARTH DIAGNOSTIC AND CV READINGS
+    // Base Unplugged Noise = ~150
+    // LFO Min/Max = ~497 to ~1320
+    // Theremin Max = ~1680
+    int constrained_earth = s_earth;
+    if (constrained_earth < 300) constrained_earth = 300;
+    if (constrained_earth > 1500) constrained_earth = 1500;
+    
+    int earth_norm = ((constrained_earth - 300) * 255) / 1200;
+    
+    if (s_earth < 200) earth_norm = 0; // Unplugged safety floor
+    
+    // --- EARTH SMOOTHING & SLICE ASSIGNMENT --- 
+    s4_earth_acc += ((earth_norm << 8) - s4_earth_acc) >> 4;
     int earth_val = s4_earth_acc >> 8;
     
     if (preview_slice == 0) {
@@ -3467,15 +4236,21 @@ void IRAM_ATTR sampler_4x() {
 
     // --- CONTROLS ---
 
-    // SYSTEM MODE (Tied directly to the OS Freeze State)
-    bool system_mode = audio_frozen_state;
+    // BUTTON (OS Freeze tied to prevent long-press overwrites)
+    if (audio_frozen_state != last_frozen) {
+        last_frozen = audio_frozen_state;
+        system_mode = !system_mode; 
+    }
 
+    // MODE CHANGE LOGIC
     if (system_mode != last_system_mode) {
         last_system_mode = system_mode;
-        is_active = false;
-        tail_active = false;
-        one_shot_locked = false;
-        yellow_pulse_timer = 0;
+        
+        // Manual Tape Abort
+        if (system_mode && !current_action_is_play && is_active && !is_stopping) {
+            is_stopping = true;
+            rec_stop_timer = XFADE_LEN;
+        }
         
         bool s_raw = SKIPPERAT;
         skip_integrator = s_raw ? 2000 : 0;
@@ -3486,7 +4261,7 @@ void IRAM_ATTR sampler_4x() {
         flip_latch = f_raw ? 1 : 0;
     }
 
-    // SKIP
+    // SKIP (Retriggerable Play/Record)
     if (SKIPPERAT) { if (skip_integrator < 2000) skip_integrator += 20; }
     else           { if (skip_integrator > 0) skip_integrator -= 50; }
     
@@ -3495,8 +4270,8 @@ void IRAM_ATTR sampler_4x() {
         if (skip_latch == 0) { skip_rising = true; skip_latch = 1; }
     } else if (skip_integrator < 100) { skip_latch = 0; }
 
-    // FLIP
-    if (FLIPPERAT) { if (flip_integrator < 2000) flip_integrator += 2; } 
+    // FLIP (Locked One-Shot Trigger)
+    if (FLIPPERAT) { if (flip_integrator < 2000) flip_integrator += 20; } 
     else           { if (flip_integrator > 0) flip_integrator -= 50; }
 
     bool flip_rising = false;
@@ -3507,6 +4282,9 @@ void IRAM_ATTR sampler_4x() {
     // --- STATE MACHINE ---
     bool trigger_valid = false;
     bool is_one_shot = false;
+
+    // Update target mode dynamically so it's always ready for the next trigger
+    bool target_action_is_play = system_mode;
 
     if (flip_rising) {
         if (!one_shot_locked) {
@@ -3521,27 +4299,59 @@ void IRAM_ATTR sampler_4x() {
         }
     }
 
+    // Record Lockout
+    if (!target_action_is_play && is_active) {
+        trigger_valid = false;
+    }
+
+    // Prevent instantaneous playback jumps while a punch-out fade is rendering
+    if (is_stopping) {
+        trigger_valid = false;
+    }
+
     if (trigger_valid) {
         int old_slice = current_slice;
         current_slice = preview_slice;
 
         one_shot_locked = is_one_shot;
 
-        if (!system_mode) {
+        bool old_action_was_play = (current_action_is_play && is_active);
+        bool old_action_was_record = (!current_action_is_play && is_active);
+        current_action_is_play = target_action_is_play; 
+
+        if (!current_action_is_play) {
             // RECORD START
+            if (old_action_was_play) {
+                int outgoing_timer = (play_timer < XFADE_LEN) ? play_timer : XFADE_LEN;
+                
+                // LOUDEST-TAKES-PRECEDENCE
+                if (!tail_active || outgoing_timer > tail_timer) {
+                    tail_active = true;
+                    tail_slice = old_slice;
+                    tail_offset = offset;
+                    tail_timer = outgoing_timer;
+                }
+            } else {
+                tail_active = false;
+            }
+            
             is_active = true;
             offset = 0;
-            tail_active = false;
             slice_starts[current_slice] = 0; 
             detection_armed = true; 
         } 
         else {
             // PLAY START
             if (is_active) {
-                tail_active = true;
-                tail_slice = old_slice; 
-                tail_offset = offset;       
-                tail_timer = XFADE_LEN; 
+                int outgoing_timer = old_action_was_record ? XFADE_LEN : ((play_timer < XFADE_LEN) ? play_timer : XFADE_LEN);
+                
+                // LOUDEST-TAKES-PRECEDENCE
+                if (!tail_active || outgoing_timer > tail_timer) {
+                    tail_active = true;
+                    tail_slice = old_slice; 
+                    tail_offset = offset;       
+                    tail_timer = outgoing_timer; 
+                }
             }
             is_active = true;
             offset = slice_starts[current_slice]; 
@@ -3549,12 +4359,34 @@ void IRAM_ATTR sampler_4x() {
         }
     }
 
+    // --- UNIVERSAL TAIL CROSSFADER ---
+    int32_t tail_mix = 0;
+    if (tail_active) {
+        int raw = dellius((tail_slice * S4_LEN) + tail_offset, 0, true);
+        
+        int tail_gain = (tail_timer * 256) / XFADE_LEN;
+        
+        int distance_to_end = S4_LEN - tail_offset;
+        int win_gain = 256;
+        if (distance_to_end < XFADE_LEN) win_gain = (distance_to_end * 256) / XFADE_LEN;
+        
+        int final_gain = (tail_gain * win_gain) >> 8;
+        tail_mix = ((raw - 2048) * final_gain) >> 8;
+
+        tail_offset++;
+        
+        if (tail_offset >= S4_LEN) tail_active = false;
+        
+        tail_timer--;
+        if (tail_timer <= 0) tail_active = false;
+    }
+
     int output_sample = 2048; 
 
     // --- PROCESS AUDIO ---
     
     // A. RECORD MODE
-    if (!system_mode && is_active) {
+    if (!current_action_is_play && is_active) {
         if (detection_armed) {
             int signal_level = clean_audio - 2048;
             if (signal_level < 0) signal_level = -signal_level;
@@ -3568,79 +4400,104 @@ void IRAM_ATTR sampler_4x() {
         }
 
         int write_addr = (current_slice * S4_LEN) + offset;
-        dellius(write_addr, clean_audio, false);
-        output_sample = clean_audio; 
+
+        // --- PUNCH-IN & PUNCH-OUT CROSSFADE ---
+        int rec_gain = 256;
+        if (offset < XFADE_LEN) {
+            rec_gain = (offset * 256) / XFADE_LEN; 
+        } else if (offset > (S4_LEN - XFADE_LEN)) {
+            rec_gain = ((S4_LEN - offset) * 256) / XFADE_LEN; 
+        }
+        
+        if (is_stopping) {
+            int stop_gain = (rec_stop_timer * 256) / XFADE_LEN;
+            if (stop_gain < rec_gain) rec_gain = stop_gain; 
+            
+            rec_stop_timer--;
+            if (rec_stop_timer <= 0) {
+                is_stopping = false;
+                is_active = false;
+                yellow_pulse_timer = 3000;
+            }
+        }
+        
+        int final_write = clean_audio;
+        
+        // Only calculate crossfade at boundaries
+        if (rec_gain < 256) {
+            int old_audio = dellius(write_addr, 0, true);
+            int ac_live = clean_audio - 2048;
+            int ac_old = old_audio - 2048;
+            
+            int ac_mix = ((ac_live * rec_gain) + (ac_old * (256 - rec_gain))) >> 8;
+            final_write = ac_mix + 2048;
+        }
+
+        dellius(write_addr, final_write, false);
+        
+        // --- MONITOR FADE + TAIL MIX ---
+        int ac_live_mon = clean_audio - 2048;
+        int mon_out = (ac_live_mon * rec_gain) >> 8;
+        
+        output_sample = mon_out + tail_mix + 2048;
         
         offset++;
         if (offset >= S4_LEN) {
             is_active = false; 
-            one_shot_locked = false;
+            is_stopping = false; 
             yellow_pulse_timer = 3000; 
+
+            // --- AUTO-REVERT TO PLAY MODE ---
+            system_mode = true;
+            last_system_mode = true;
+            current_action_is_play = true;
         }
     }
     
     // B. PLAY MODE
-    else if (system_mode) {
-        int32_t mix_accumulator = 0;
+    else if (current_action_is_play && is_active) {
+        int read_addr = (current_slice * S4_LEN) + offset;
+        int raw = dellius(read_addr, 0, true);
+        
+        int attack_gain = 256;
+        if (play_timer < XFADE_LEN) attack_gain = (play_timer * 256) / XFADE_LEN;
+        
+        int release_gain = 256;
+        int distance_to_end = S4_LEN - offset;
+        if (distance_to_end < XFADE_LEN) release_gain = (distance_to_end * 256) / XFADE_LEN;
+        
+        int pos_gain = (attack_gain * release_gain) >> 8;
+        int32_t main_mix = ((raw - 2048) * pos_gain) >> 8;
 
-        // MAIN VOICE
-        if (is_active) {
-            int read_addr = (current_slice * S4_LEN) + offset;
-            int raw = dellius(read_addr, 0, true);
-            
-            int attack_gain = 256;
-            if (play_timer < XFADE_LEN) attack_gain = (play_timer * 256) / XFADE_LEN;
-            
-            int release_gain = 256;
-            if (offset > (S4_LEN - XFADE_LEN)) release_gain = ((S4_LEN - offset) * 256) / XFADE_LEN;
-            
-            int pos_gain = (attack_gain * release_gain) >> 8;
-            mix_accumulator += ((raw - 2048) * pos_gain) >> 8;
-
-            offset++; 
-            play_timer++; 
-            
-            if (offset >= S4_LEN) {
-                is_active = false;
-                one_shot_locked = false; 
-                yellow_pulse_timer = 3000; 
-            }
+        offset++;
+        play_timer++; 
+        
+        if (offset >= S4_LEN) {
+            is_active = false;
+            one_shot_locked = false; // Release lock on completion
+            yellow_pulse_timer = 3000; 
         }
 
-        // TAIL VOICE (for crossfade)
-        if (tail_active) {
-            int read_addr = (tail_slice * S4_LEN) + tail_offset;
-            int raw = dellius(read_addr, 0, true);
-            
-            int tail_gain = (tail_timer * 256) / XFADE_LEN;
-            
-            int win_gain = 256;
-            if (tail_offset > (S4_LEN - XFADE_LEN)) 
-                win_gain = ((S4_LEN - tail_offset) * 256) / XFADE_LEN;
-            
-            int final_gain = (tail_gain * win_gain) >> 8;
-            mix_accumulator += ((raw - 2048) * final_gain) >> 8;
-
-            tail_offset++; 
-            if (tail_offset >= S4_LEN) tail_active = false;
-            
-            tail_timer--;
-            if (tail_timer <= 0) tail_active = false;
-        }
-
-        output_sample = mix_accumulator + 2048;
-        if (output_sample > 4095) output_sample = 4095;
-        if (output_sample < 0) output_sample = 0;
+        output_sample = main_mix + tail_mix + 2048;
     }
     
-    if (!is_active && !tail_active && system_mode) output_sample = 2048;
-    
+    // C. IDLE MODE
+    else {
+        output_sample = tail_mix + 2048;
+    }
+
+    if (output_sample > 4095) output_sample = 4095;
+    if (output_sample < 0) output_sample = 0;
+
     // --- VISUALS ---
-    if (!system_mode) {
-        if (is_active) {
-            if ((offset >> 10) & 1) LAMP_ON; else LAMP_OFF;
+    if (is_active) {
+        if (current_action_is_play) {
+            LAMP_ON; 
         } else {
-            // Idle Blink
+            if ((offset >> 10) & 1) LAMP_ON; else LAMP_OFF; 
+        }
+    } else {
+        if (!system_mode) {
             offset++; 
             int cycle = (offset >> 13) & 0x1F; 
             if (cycle < ((preview_slice + 1) * 2)) {
@@ -3648,16 +4505,15 @@ void IRAM_ATTR sampler_4x() {
             } else {
                 LAMP_OFF;
             }
+        } else {
+            LAMP_ON; 
         }
-    } else {
-        LAMP_ON; 
     }
 
     // --- OUTPUTS ---
     DACWRITER(output_sample);
     ASHWRITER(output_sample); 
     
-    // YELLOW 
     if (yellow_pulse_timer > 0) {
         YELLOW_PULSE(4095);
         yellow_pulse_timer--;
@@ -3719,300 +4575,305 @@ void IRAM_ATTR granular() {
     static int s_earth = -1;
     static int boot_timer = 0;
 
-morph_to_8bit(); //needed for buffer translation
+    morph_to_8bit(); //needed for buffer translation
 
- int audio_in = ADCREADER; 
+    int audio_in = ADCREADER; 
 
-// ------------------------------------------
-// CONTROLS & WAKE UP
-// ------------------------------------------
-static int prev_skip = 0;
-static bool last_frozen = false;
-
-// NEW: Flip Latch States
-static int flip_integrator = 0;
-static bool prev_flip_stable = false;
-static bool flip_latched = false;
-
-// --- WAKE UP BLOCK ---
-static bool was_in_menu = false;
-if (preset_mode) {
-    was_in_menu = true;
-} else if (was_in_menu) {
-    was_in_menu = false;
+    // ------------------------------------------
+    // CONTROLS & WAKE UP
+    // ------------------------------------------
+    static int prev_skip = 0;
+    static bool last_frozen = false;
     
-    // Inherit the global freeze state
-    last_frozen = audio_frozen_state;
-    system_mode = audio_frozen_state; 
-    
-    is_active = false;
-    seeking_cue = false;
-    
-    cal_min = 4095;
-    cal_max = 0;
-    s_earth = -1;
-    knob_moved = false;
-    boot_timer = 0;
-    
-    // Sync hardware resting states
-    prev_skip = SKIPPERAT;
-    
-    bool flip_raw = FLIPPERAT;
-    flip_integrator = flip_raw ? 300 : 0;
-    prev_flip_stable = flip_raw;
-    flip_latched = false;
-}
+    // Engine States
+    static bool system_mode = true; 
+    static bool is_active = false;
+    static int offset = 0;
 
- // ------------------------------------------
- // EARTH CALIBRATION
- // ------------------------------------------
- REG(APB_SARADC_SAR1_PATT_TAB1_REG)[0] = (0x0C<<24) | (0x6C<<16);
- uint32_t fifo_data = REG(I2S_FIFO_RD_REG)[0];
- int channel = (fifo_data >> 12) & 0xF; 
- int value   = (fifo_data & 0xFFF);     
- 
- if (channel == 0) {
-     if (s_earth == -1) s_earth = value;
-     else s_earth += (value - s_earth) >> 4;
- }
+    // Flip Latch States
+    static int flip_integrator = 0;
+    static bool prev_flip_stable = false;
+    static bool flip_latched = false;
 
- if (boot_timer < 2000) {
-     boot_timer++;
-     initial_earth = s_earth;
- }
- 
-// ------------------------------------------
-// FREEZE - Needed for Buffer Transfer
-// ------------------------------------------
-if (audio_frozen_state != last_frozen) {
-    last_frozen = audio_frozen_state;
-    system_mode = audio_frozen_state; 
-    
-    for(int i=0; i<MAX_GRAINS; i++) grains[i].active = false;
-    if (!system_mode) offset = 0;
-}
-
-// ------------------------------------------
-// TRIGGER LOGIC
-// ------------------------------------------
-int curr_skip = SKIPPERAT; 
-bool skip_rising = (curr_skip && !prev_skip);
-prev_skip = curr_skip;
-
-// --- FLIP - LATCHING SWITCH - TOGGLE GRAIN SIZE
-bool flip_raw = FLIPPERAT;
-
-if (boot_timer < 2000) {
-    flip_integrator = flip_raw ? 300 : 0;
-    prev_flip_stable = flip_raw;
-} else {
-    if (flip_raw) { if (flip_integrator < 300) flip_integrator++; }
-    else          { if (flip_integrator > 0) flip_integrator--; }
-    
-    bool flip_stable = (flip_integrator > 250);
-    
-    if (flip_stable && !prev_flip_stable) {
-        flip_latched = !flip_latched;
+    // --- WAKE UP BLOCK ---
+    static bool was_in_menu = false;
+    static bool is_first_run = true;
+    if (preset_mode) {
+        was_in_menu = true;
+    } else if (was_in_menu || is_first_run) {
+        was_in_menu = false;
+        is_first_run = false;
+        
+        // Inherit the global freeze state
+        last_frozen = audio_frozen_state;
+        system_mode = true; 
+        
+        is_active = false;
+        seeking_cue = false;
+        
+        cal_min = 4095;
+        cal_max = 0;
+        s_earth = -1;
+        knob_moved = false;
+        boot_timer = 0;
+        
+        // Sync hardware resting states
+        prev_skip = SKIPPERAT;
+        
+        bool flip_raw = FLIPPERAT;
+        flip_integrator = flip_raw ? 300 : 0;
+        prev_flip_stable = flip_raw;
+        flip_latched = false;
     }
-    prev_flip_stable = flip_stable;
-}
+
+    // ------------------------------------------
+    // EARTH CALIBRATION
+    // ------------------------------------------
+    REG(APB_SARADC_SAR1_PATT_TAB1_REG)[0] = (0x0C<<24) | (0x6C<<16);
+    uint32_t fifo_data = REG(I2S_FIFO_RD_REG)[0];
+    int channel = (fifo_data >> 12) & 0xF; 
+    int value   = (fifo_data & 0xFFF);     
+    
+    if (channel == 0) {
+        if (s_earth == -1) s_earth = value;
+        else s_earth += (value - s_earth) >> 4;
+    }
+
+    if (boot_timer < 2000) {
+        boot_timer++;
+        initial_earth = s_earth;
+    }
+    
+    // ------------------------------------------
+    // FREEZE - Mode Toggle
+    // ------------------------------------------
+    if (audio_frozen_state != last_frozen) {
+        last_frozen = audio_frozen_state;
+        system_mode = !system_mode; 
+        
+        for(int i=0; i<MAX_GRAINS; i++) grains[i].active = false;
+        if (!system_mode) offset = 0;
+    }
+
+    // ------------------------------------------
+    // TRIGGER LOGIC
+    // ------------------------------------------
+    int curr_skip = SKIPPERAT; 
+    bool skip_rising = (curr_skip && !prev_skip);
+    prev_skip = curr_skip;
+
+    // --- FLIP - LATCHING SWITCH - TOGGLE GRAIN SIZE
+    bool flip_raw = FLIPPERAT;
+
+    if (boot_timer < 2000) {
+        flip_integrator = flip_raw ? 300 : 0;
+        prev_flip_stable = flip_raw;
+    } else {
+        if (flip_raw) { if (flip_integrator < 300) flip_integrator++; }
+        else          { if (flip_integrator > 0) flip_integrator--; }
+        
+        bool flip_stable = (flip_integrator > 250);
+        
+        if (flip_stable && !prev_flip_stable) {
+            flip_latched = !flip_latched;
+        }
+        prev_flip_stable = flip_stable;
+    }
 
 
- // ------------------------------------------
- // RECORD MODE (ARMED = LAMP OFF, RECORDING = BLINKING)
- // ------------------------------------------
- if (system_mode == false) {
-     if (skip_rising && !is_active) {
-         is_active = true; 
-         offset = 0;
-         
-         // RESET AUTO-CUE
-         cue_start_idx = 0; 
-         seeking_cue = true; 
-     }
-     
-     if (is_active) {
-         // AUTO-CUE LOGIC
-         if (seeking_cue) {
-             int signal_level = audio_in - 2048;
-             if (signal_level < 0) signal_level = -signal_level;
-             
-             if (signal_level > TRIM_THRESH) {
-                 cue_start_idx = offset - PRE_BREATH;
-                 if (cue_start_idx < 0) cue_start_idx = 0;
-                 seeking_cue = false;
-             }
-         }
+    // ------------------------------------------
+    // RECORD MODE (ARMED = LAMP OFF, RECORDING = BLINKING)
+    // ------------------------------------------
+    if (system_mode == false) {
+        if (skip_rising && !is_active) {
+            is_active = true; 
+            offset = 0;
+            
+            // RESET AUTO-CUE
+            cue_start_idx = 0; 
+            seeking_cue = true; 
+        }
+        
+        if (is_active) {
+            // AUTO-CUE LOGIC
+            if (seeking_cue) {
+                int signal_level = audio_in - 2048;
+                if (signal_level < 0) signal_level = -signal_level;
+                
+                if (signal_level > TRIM_THRESH) {
+                    cue_start_idx = offset - PRE_BREATH;
+                    if (cue_start_idx < 0) cue_start_idx = 0;
+                    seeking_cue = false;
+                }
+            }
 
-         pout = audio_in; 
-         dellius(offset, audio_in, false); 
-         if ((offset >> 11) & 1) LAMP_ON; else LAMP_OFF;
-         offset++;
-         if (offset >= SAMPLE_LEN) {
-             offset = 0;
-             is_active = false; 
-             seeking_cue = false;
-             LAMP_OFF;
-         }
-     } else {
-         LAMP_OFF;
-     }
- } 
- 
- // ------------------------------------------
- // PLAY MODE
- // ------------------------------------------
- else {
-     LAMP_ON; 
-     
-     // EARTH AUTO-CALIBRATION
-     if (!knob_moved && boot_timer >= 2000) {
-         int drift = s_earth - initial_earth;
-         if (drift < 0) drift = -drift;
-         if (drift > 300) {
-             knob_moved = true; 
-         }
-     }
+            pout = audio_in; 
+            dellius(offset, audio_in, false); 
+            if ((offset >> 11) & 1) LAMP_ON; else LAMP_OFF;
+            offset++;
+            
+            if (offset >= SAMPLE_LEN) {
+                offset = 0;
+                is_active = false; 
+                seeking_cue = false;
+                LAMP_OFF;
+                
+                // --- AUTO-REVERT TO PLAY MODE ---
+                system_mode = true;
+            }
+        } else {
+            LAMP_OFF;
+        }
+    } 
+    
+    // ------------------------------------------
+    // PLAY MODE
+    // ------------------------------------------
+    else {
+        LAMP_ON; 
+        
+        // EARTH AUTO-CALIBRATION
+        if (!knob_moved && boot_timer >= 2000) {
+            int drift = s_earth - initial_earth;
+            if (drift < 0) drift = -drift;
+            if (drift > 300) {
+                knob_moved = true; 
+            }
+        }
 
-     if (knob_moved) {
-         if (s_earth < cal_min) cal_min = s_earth;
-         if (s_earth > cal_max) cal_max = s_earth;
-     } else {
-         cal_min = initial_earth;
-         cal_max = initial_earth;
-     }
-     
-     // SKIP TRIGGER GRAIN
-     if (skip_rising) { 
-         for (int i = 0; i < MAX_GRAINS; i++) {
-             if (!grains[i].active) {
-                 grains[i].active = true;
-                //  if (FLIPPERAT) grains[i].total_life = GRAIN_SHORT; 
-                //  else           grains[i].total_life = GRAIN_LONG;  
+        if (knob_moved) {
+            if (s_earth < cal_min) cal_min = s_earth;
+            if (s_earth > cal_max) cal_max = s_earth;
+        } else {
+            cal_min = initial_earth;
+            cal_max = initial_earth;
+        }
+        
+        // SKIP TRIGGER GRAIN
+        if (skip_rising) { 
+            for (int i = 0; i < MAX_GRAINS; i++) {
+                if (!grains[i].active) {
+                    grains[i].active = true;
 
-                if (flip_latched) grains[i].total_life = GRAIN_SHORT; 
-                 else              grains[i].total_life = GRAIN_LONG;
-                 grains[i].life = grains[i].total_life;
-                 
-                 // CALCULATE MAPPED POSITION
-                 int range = cal_max - cal_min;
-                 if (range < 50) range = 50; 
-                 
-                 int rel_earth = s_earth - cal_min;
-                 if (rel_earth < 0) rel_earth = 0;
-                 
-                 // Available Audio Length
-                 int usable_len = SAMPLE_LEN - cue_start_idx - 1000; 
-                 if (usable_len < 1000) usable_len = 1000;
+                    if (flip_latched) grains[i].total_life = GRAIN_SHORT; 
+                    else              grains[i].total_life = GRAIN_LONG;
+                    grains[i].life = grains[i].total_life;
+                    
+                    // CALCULATE MAPPED POSITION
+                    int range = cal_max - cal_min;
+                    if (range < 50) range = 50; 
+                    
+                    int rel_earth = s_earth - cal_min;
+                    if (rel_earth < 0) rel_earth = 0;
+                    
+                    // Available Audio Length
+                    int usable_len = SAMPLE_LEN - cue_start_idx - 1000; 
+                    if (usable_len < 1000) usable_len = 1000;
 
-                 // Target = Start_Cue + (Percent * Length)
-                 int target_pos = cue_start_idx + ((long)rel_earth * usable_len / range);
+                    // Target = Start_Cue + (Percent * Length)
+                    int target_pos = cue_start_idx + ((long)rel_earth * usable_len / range);
 
-                 // If knob hasn't moved, bring to the cue point
-                 if (!knob_moved) target_pos = cue_start_idx;
+                    // If knob hasn't moved, bring to the cue point
+                    if (!knob_moved) target_pos = cue_start_idx;
 
-                 // ADD JITTER
-                 int jitter = (t & 0x1FF) << 3; 
-                 target_pos += jitter;
+                    // ADD JITTER
+                    int jitter = (t & 0x1FF) << 3; 
+                    target_pos += jitter;
 
-                 // APPLY FADE PRE-ROLL
-                 grains[i].position = target_pos - FADE_SIZE;
-                 
-                 // Wrap Safety
-                 if (grains[i].position < 0) grains[i].position += SAMPLE_LEN;
-                 while (grains[i].position >= SAMPLE_LEN) grains[i].position -= SAMPLE_LEN;
-                 
-                 break; 
-             }
-         }
-     }
+                    // APPLY FADE PRE-ROLL
+                    grains[i].position = target_pos - FADE_SIZE;
+                    
+                    // Wrap Safety
+                    if (grains[i].position < 0) grains[i].position += SAMPLE_LEN;
+                    while (grains[i].position >= SAMPLE_LEN) grains[i].position -= SAMPLE_LEN;
+                    
+                    break; 
+                }
+            }
+        }
 
-     // MIX
-     int32_t mix_accumulator = 0; 
-     int active_count = 0;
+        // MIX
+        int32_t mix_accumulator = 0; 
+        int active_count = 0;
 
-     for (int i = 0; i < MAX_GRAINS; i++) {
-         if (grains[i].active) {
-             active_count++;
-             int raw = dellius(grains[i].position, 0, true);
-             int gain = 0;
-             
-             // ENVELOPE
-             if (grains[i].total_life == GRAIN_SHORT) {
-                 int elapsed = grains[i].total_life - grains[i].life;
-                 if (elapsed < FADE_SIZE) gain = (elapsed * 256) / FADE_SIZE;
-                 else if (grains[i].life < FADE_SIZE) gain = (grains[i].life * 256) / FADE_SIZE;
-                 else gain = 256;
-             } 
-             else {
-                 int halfway = grains[i].total_life / 2;
-                 if (grains[i].life > halfway) gain = (grains[i].total_life - grains[i].life) * 256 / halfway; 
-                 else gain = grains[i].life * 256 / halfway;
-             }
+        for (int i = 0; i < MAX_GRAINS; i++) {
+            if (grains[i].active) {
+                active_count++;
+                int raw = dellius(grains[i].position, 0, true);
+                int gain = 0;
+                
+                // ENVELOPE
+                if (grains[i].total_life == GRAIN_SHORT) {
+                    int elapsed = grains[i].total_life - grains[i].life;
+                    if (elapsed < FADE_SIZE) gain = (elapsed * 256) / FADE_SIZE;
+                    else if (grains[i].life < FADE_SIZE) gain = (grains[i].life * 256) / FADE_SIZE;
+                    else gain = 256;
+                } 
+                else {
+                    int halfway = grains[i].total_life / 2;
+                    if (grains[i].life > halfway) gain = (grains[i].total_life - grains[i].life) * 256 / halfway; 
+                    else gain = grains[i].life * 256 / halfway;
+                }
 
-             // AC MIX
-             int ac_sample = raw - 2048;
-             mix_accumulator += (ac_sample * gain) >> 8;
-             
-             grains[i].position++;
-             if (grains[i].position >= SAMPLE_LEN) grains[i].position = 0;
-             grains[i].life--;
-             if (grains[i].life <= 0) grains[i].active = false;
-         }
-     }
+                // AC MIX
+                int ac_sample = raw - 2048;
+                mix_accumulator += (ac_sample * gain) >> 8;
+                
+                grains[i].position++;
+                if (grains[i].position >= SAMPLE_LEN) grains[i].position = 0;
+                grains[i].life--;
+                if (grains[i].life <= 0) grains[i].active = false;
+            }
+        }
 
-// OUTPUT STAGE
-     if (active_count > 0) {
-         // 1. High-Pass Filter / DC Blocker
-         // Carves out the low-end mud that builds up when 16 grains overlap
-         static int32_t gran_dc_tracker = 0;
-         gran_dc_tracker += (mix_accumulator - gran_dc_tracker) >> 5; 
-         int32_t clean_mix = mix_accumulator - gran_dc_tracker;
+        // OUTPUT STAGE
+        if (active_count > 0) {
+            // 1. High-Pass Filter / DC Blocker
+            static int32_t gran_dc_tracker = 0;
+            gran_dc_tracker += (mix_accumulator - gran_dc_tracker) >> 5; 
+            int32_t clean_mix = mix_accumulator - gran_dc_tracker;
 
-         // 2. Gain Staging
-         // Scale down slightly (75% volume) so 1-3 grains are perfectly clean
-         int32_t signal = (clean_mix * 3) >> 2; 
-         
-         int32_t sat = signal;
-         
-         // 3. Asymptotic Tube Limiter (Threshold pushed higher to 1600)
-         // Leaves quiet grains 1:1, perfectly asymptotes dense clouds to 2047
-         if (signal > 1600) {
-             int32_t over = signal - 1600;
-             int32_t headroom = 447; // 2047 (DAC limit) - 1600 (Threshold)
-             int32_t compressed = (over * headroom) / (headroom + over); 
-             sat = 1600 + compressed;
-         } else if (signal < -1600) {
-             int32_t over = (-signal) - 1600;
-             int32_t headroom = 447;
-             int32_t compressed = (over * headroom) / (headroom + over);
-             sat = -1600 - compressed;
-         }
-         
-         pout = sat + 2048;
-         if (pout > 4095) pout = 4095;
-         if (pout < 0) pout = 0;
-     } else {
-         pout = 2048; 
-     }
- }
+            // 2. Gain Staging
+            int32_t signal = (clean_mix * 3) >> 2; 
+            
+            int32_t sat = signal;
+            
+            // 3. Asymptotic Tube Limiter 
+            if (signal > 1600) {
+                int32_t over = signal - 1600;
+                int32_t headroom = 447; 
+                int32_t compressed = (over * headroom) / (headroom + over); 
+                sat = 1600 + compressed;
+            } else if (signal < -1600) {
+                int32_t over = (-signal) - 1600;
+                int32_t headroom = 447;
+                int32_t compressed = (over * headroom) / (headroom + over);
+                sat = -1600 - compressed;
+            }
+            
+            pout = sat + 2048;
+            if (pout > 4095) pout = 4095;
+            if (pout < 0) pout = 0;
+        } else {
+            pout = 2048; 
+        }
+    }
 
- // ------------------------------------------
- // HARDWARE OUTPUT
- // ------------------------------------------
+    // ------------------------------------------
+    // HARDWARE OUTPUT
+    // ------------------------------------------
 
- // for jitter
- t++; 
- t = t & 0xFFFF;
+    // for jitter
+    t++; 
+    t = t & 0xFFFF;
 
+    DACWRITER(pout); 
+    ASHWRITER(pout);
+    YELLOW_AUDIO(pout);
 
- DACWRITER(pout); 
- ASHWRITER(pout);
- YELLOW_AUDIO(pout);
-
- REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
- REG(I2S_INT_CLR_REG)[0]=0xFFFFFFFF;
- REG(I2S_CONF_REG)[0] |= (BIT(5)); 
+    REG(I2S_CONF_REG)[0] &= ~(BIT(5)); 
+    REG(I2S_INT_CLR_REG)[0]=0xFFFFFFFF;
+    REG(I2S_CONF_REG)[0] |= (BIT(5)); 
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////END/////////////////////
@@ -4043,6 +4904,7 @@ struct PhaseHead {
     bool tail_active;
     int tail_pos;
     int tail_timer;
+    bool tail_dir_rev;
 };
 
 static struct PhaseHead p_heads[PH_VOICES];
@@ -4075,10 +4937,12 @@ void IRAM_ATTR phasing() {
     static int boot_timer = 0;
 
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         
         // Audio Engine Transfer Resets
         ph_recording = false;   
@@ -4164,8 +5028,12 @@ void IRAM_ATTR phasing() {
     } else if (skip_integrator < 100) { skip_latch = 0; }
 
     // --- PHASE LOGIC ---
+    
+    // Smooth the Earth CV
+    static int smoothed_earth = 0;
+    smoothed_earth += (earth_raw - smoothed_earth) >> 4;
 
-    int delta = 1 + earth_raw; 
+    int delta = 1 + smoothed_earth; 
     if (delta > PH_MAX_DELTA) delta = PH_MAX_DELTA;
 
     int output_sample = 2048;
@@ -4189,6 +5057,16 @@ void IRAM_ATTR phasing() {
                 ph_active = false;
                 offset = 0; 
                 LAMP_OFF;
+                
+                // --- AUTO-REVERT TO PLAY MODE ---
+                ph_recording = false;
+                ph_rec_len = PH_MAX_LEN; 
+                
+                // Initialize Heads
+                for(int i=0; i<PH_VOICES; i++) {
+                    p_heads[i].pos = 0;
+                    p_heads[i].tail_active = false;
+                }
             }
         } else {
             LAMP_OFF;
@@ -4196,17 +5074,33 @@ void IRAM_ATTR phasing() {
         output_sample = clean_audio; 
 
     } else {
+
         // --- PLAY MODE ---
         
-        // RANDOMIZE PLAYHEADS
-        if (trigger_rising) {
+        // Detect Flip Change for Spatial Jump
+        static bool prev_reverse_mode = false;
+        bool direction_changed = (reverse_mode != prev_reverse_mode);
+        prev_reverse_mode = reverse_mode;
+
+        // RANDOMIZE PLAYHEADS OR FLIP DIRECTION
+        if (trigger_rising || direction_changed) {
             static uint32_t seed = 0xCAFEBABE;
             for(int i=0; i<PH_VOICES; i++) {
                  int my_len = ph_rec_len - (i * delta);
                  if (my_len < 2000) my_len = 2000;
-                 seed = (seed * 1664525 + 1013904223); 
-                 p_heads[i].pos = seed % my_len;
-                 p_heads[i].tail_active = false; 
+                 
+                 // Snapshot into ghost tail for crossfade
+                 p_heads[i].tail_active = true;
+                 p_heads[i].tail_pos = p_heads[i].pos; 
+                 p_heads[i].tail_timer = PH_XFADE;
+                 p_heads[i].tail_dir_rev = !reverse_mode; // Snapshot the OLD direction!
+                 
+                 // If SKIP triggered, jump to a new random location
+                 // (If only direction changed, position stays the same but crossfades into reverse)
+                 if (trigger_rising) {
+                     seed = (seed * 1664525 + 1013904223); 
+                     p_heads[i].pos = seed % my_len;
+                 }
             }
         }
 
@@ -4220,24 +5114,37 @@ void IRAM_ATTR phasing() {
             int raw = dellius(p_heads[i].pos, 0, true);
             int gain = 256;
             
-            // FADE IN
-            if (p_heads[i].pos < PH_XFADE) {
-                gain = (p_heads[i].pos * 256) / PH_XFADE;
+            // FADE IN (Direction-Aware Boundary Fade)
+            if (!reverse_mode) {
+                if (p_heads[i].pos < PH_XFADE) {
+                    gain = (p_heads[i].pos * 256) / PH_XFADE;
+                }
+            } else {
+                if (p_heads[i].pos > (my_len - PH_XFADE)) {
+                    gain = ((my_len - p_heads[i].pos) * 256) / PH_XFADE;
+                }
             }
+            if (gain < 0) gain = 0;
+            if (gain > 256) gain = 256;
             
-            mix += ((raw - 2048) * gain) >> 8;
+            int32_t head_sample = ((raw - 2048) * gain) >> 8;
 
-            // TAIL VOICE
+            // TAIL VOICE (Skip & Loop Wrap Crossfade)
             if (p_heads[i].tail_active) {
-                if (p_heads[i].tail_pos >= ph_rec_len) p_heads[i].tail_pos = 0;
-                
                 int t_raw = dellius(p_heads[i].tail_pos, 0, true);
-                int t_gain = (p_heads[i].tail_timer * 256) / PH_XFADE;
-                mix += ((t_raw - 2048) * t_gain) >> 8;
+                int32_t tail_sample = t_raw - 2048;
                 
-                if (reverse_mode) p_heads[i].tail_pos--; 
-                else              p_heads[i].tail_pos++;
+                int fade_out = p_heads[i].tail_timer;
+                int fade_in = PH_XFADE - fade_out;
+
+                // Blend the ghost head and the main head 
+                head_sample = ((head_sample * fade_in) + (tail_sample * fade_out)) / PH_XFADE;
                 
+                // Advance ghost tail in its snapshot direction
+                if (p_heads[i].tail_dir_rev) p_heads[i].tail_pos--; 
+                else                         p_heads[i].tail_pos++;
+                
+                // Safe-wrap tail to the completely RECORDED length
                 if (p_heads[i].tail_pos >= ph_rec_len) p_heads[i].tail_pos = 0;
                 if (p_heads[i].tail_pos < 0) p_heads[i].tail_pos = ph_rec_len - 1;
 
@@ -4245,34 +5152,49 @@ void IRAM_ATTR phasing() {
                 if (p_heads[i].tail_timer <= 0) p_heads[i].tail_active = false;
             }
 
-            // ADVANCE
+            mix += head_sample;
+
+            // ADVANCE MAIN PLAYHEAD
             if (!reverse_mode) {
                 p_heads[i].pos++;
                 if (p_heads[i].pos >= my_len) {
                     p_heads[i].tail_active = true;
                     p_heads[i].tail_pos = p_heads[i].pos; 
-                    if (p_heads[i].tail_pos >= ph_rec_len) p_heads[i].tail_pos = 0;
+                    p_heads[i].tail_dir_rev = reverse_mode; // Snapshot current direction
                     p_heads[i].tail_timer = PH_XFADE;
                     p_heads[i].pos = 0; 
                 }
             } else {
                 p_heads[i].pos--;
-                if (p_heads[i].pos < 0) {
+                // Catch out-of-bounds jumps if Earth dynamically shrinks the loop
+                if (p_heads[i].pos < 0 || p_heads[i].pos >= my_len) { 
                     p_heads[i].tail_active = true;
                     p_heads[i].tail_pos = p_heads[i].pos; 
-                    if (p_heads[i].tail_pos < 0) p_heads[i].tail_pos = ph_rec_len - 1;
+                    p_heads[i].tail_dir_rev = reverse_mode; // Snapshot current direction
                     p_heads[i].tail_timer = PH_XFADE;
                     p_heads[i].pos = my_len - 1;
                 }
             }
         }
         
-        // --- SATURATOR ---
-        int32_t signal = mix; 
-        if (signal > 6000) signal = 6000;
-        if (signal < -6000) signal = -6000;
-        int32_t abs_sig = (signal > 0) ? signal : -signal;
-        int32_t sat = signal - ((signal * abs_sig) >> 15);
+        // --- SATURATOR & TUBE LIMITER ---
+        
+        int phasing_gain = 110; 
+        int32_t signal = (mix * phasing_gain) >> 8; 
+
+        int32_t sat = signal;
+        if (signal > 1600) {
+            int32_t over = signal - 1600;
+            int32_t headroom = 447; 
+            int32_t compressed = (over * headroom) / (headroom + over); 
+            sat = 1600 + compressed;
+        } else if (signal < -1600) {
+            int32_t over = (-signal) - 1600;
+            int32_t headroom = 447;
+            int32_t compressed = (over * headroom) / (headroom + over);
+            sat = -1600 - compressed;
+        }
+
         output_sample = sat + 2048;
         if (output_sample > 4095) output_sample = 4095;
         if (output_sample < 0) output_sample = 0;
@@ -4417,10 +5339,12 @@ void IRAM_ATTR megabytebeats() {
 
     // --- WAKE UP BLOCK ---
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         
         cal_min = 4095;
         cal_max = 0;
@@ -4647,10 +5571,12 @@ void IRAM_ATTR arcade() {
 
     // --- WAKE UP BLOCK ---
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         
         cal_min = 4095;
         cal_max = 0;
@@ -4926,10 +5852,12 @@ void IRAM_ATTR FX() {
 
     // --- WAKE UP BLOCK ---
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         cal_min = 4095;
         cal_max = 0;
         s_earth = -1; 
@@ -5522,10 +6450,12 @@ void IRAM_ATTR wavetable() {
 
     // --- WAKE UP BLOCK ---
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         
         // Sync to the global freeze state
         last_frozen = audio_frozen_state;
@@ -6610,9 +7540,9 @@ const uint8_t t_hat[16][192] = {
 void IRAM_ATTR polyrhythms() {
 
     //SAMPLE MANAGEMENT POINTER
-    static uint8_t *k_ptr = current_kick[0]; 
-    static uint8_t *s_ptr = current_snare[0]; 
-    static uint8_t *h_ptr = current_hat[0];
+    static uint8_t *k_ptr = NULL; 
+    static uint8_t *s_ptr = NULL; 
+    static uint8_t *h_ptr = NULL;
     //END
 
     static uint32_t k_len=0, s_len=0, h_len=0;
@@ -6655,10 +7585,12 @@ void IRAM_ATTR polyrhythms() {
 
     // --- WAKE UP BLOCK --- 
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
 
         // Generate a random beat on boot
         earth_zone_kick = rand() % 16;
@@ -6939,6 +7871,7 @@ void IRAM_ATTR tape_deck() {
     morph_to_8bit(); // Check the RAM state (8 bit or 16 bit (either way they end up in 12 bit))
 
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     static bool last_frozen = false; 
     
     // FLip & Skip switch set up
@@ -6963,8 +7896,9 @@ void IRAM_ATTR tape_deck() {
             was_in_menu = true;
         }
     } else {
-        if (was_in_menu) {
+        if (was_in_menu || is_first_run) {
             was_in_menu = false;
+            is_first_run = false;
             skip_integrator = 0;
             skip_latch = (SKIPPERAT != 0) ? 1 : 0;
             flip_integrator = 0;
@@ -7100,13 +8034,15 @@ void IRAM_ATTR window() {
     // --- WAKE UP ---
     static bool last_frozen = false; 
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     static int window_anchor = 0;
     static int smoothed_earth = -1;
 
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         last_frozen = audio_frozen_state;
         window_anchor = t; //sets playhead to where it was in previous preset from preset selection mode
         smoothed_earth = -1; //earth smoothing to keep buffer at max size on boot
@@ -7249,10 +8185,12 @@ void IRAM_ATTR splicer() {
 
     // --- WAKE UP BLOCK ---
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     if (preset_mode) {
         was_in_menu = true;
-    } else if (was_in_menu) {
+    } else if (was_in_menu || is_first_run) {
         was_in_menu = false;
+        is_first_run = false;
         last_frozen = audio_frozen_state;
         
         // Sync hardware integrators to resting state
@@ -7407,7 +8345,6 @@ void IRAM_ATTR reverb_feedback() {
     static bool was_in_menu = false;
     if (preset_mode) {
         was_in_menu = true;
-        return;
     } else if (was_in_menu) {
         was_in_menu = false;
     }
@@ -7617,6 +8554,7 @@ void IRAM_ATTR dissolve() {
 
     // --- STATIC ENGINE VARIABLES ---
     static bool was_in_menu = false;
+    static bool is_first_run = true;
     static int gyo = 2048;
     static bool force_write = false;
 
@@ -7624,8 +8562,9 @@ void IRAM_ATTR dissolve() {
     if (preset_mode) {
         was_in_menu = true;
     } else {
-        if (was_in_menu) {
+        if (was_in_menu || is_first_run) {
             was_in_menu = false;
+            is_first_run = false;
         }
 
         int raw_in = ADCREADER;

@@ -19,7 +19,7 @@ volatile bool tape_load_flag = false;
 uint8_t *drum_ram_buffer;
 
 // 30KB shared pool for any preset that needs heavy variables
-#define PRESET_POOL_SIZE 30000 
+#define PRESET_POOL_SIZE 4096 
 uint8_t *preset_volatile_pool;
 
 // pointers: Index 0=Soft, 1=Med, 2=Loud
@@ -611,6 +611,19 @@ int dellius(int ptr, int val, bool but) {
 // ---------------------------------------------------------
 
 void initDEL() {
+
+Serial.begin(115200);
+
+  // Total free memory in the heap
+  Serial.print("Total Free Heap: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");
+
+  // largest single block of memory available for malloc()
+  Serial.print("Largest Contiguous Block: ");
+  Serial.print(ESP.getMaxAllocHeap() / 1024);
+  Serial.println(" KB");
+
   Serial.println("    -> initDEL: Allocating delay buffers..."); //For Debugging
   delaybuffa = (uint8_t *)malloc((DELAYSIZE >> 2) + (DELAYSIZE >> 1)); 
   delaybuffb = (uint8_t *)malloc((DELAYSIZE >> 2) + (DELAYSIZE >> 1)); 
@@ -647,8 +660,24 @@ void initDEL() {
   }
 
   // Memory pool for large variables
+  // preset_volatile_pool = (uint8_t *)malloc(PRESET_POOL_SIZE);
+  // if (preset_volatile_pool == NULL) {
+  // }
+
+  // Memory pool for large variables
   preset_volatile_pool = (uint8_t *)malloc(PRESET_POOL_SIZE);
+  
   if (preset_volatile_pool == NULL) {
+      Serial.println("    -> FATAL: preset_volatile_pool Malloc failed! Entering infinite loop.");
+      // Fast strobe to indicate pool failure
+      while (1) {
+          REG(GPIO_OUT1_W1TS_REG)[0] = BIT(1);
+          delay(100);
+          REG(GPIO_OUT1_W1TC_REG)[0] = BIT(1);
+          delay(100);
+      }
+  } else {
+      Serial.printf("    -> Success! Volatile Pool allocated at: %p\n", preset_volatile_pool);
   }
 
   ///////////////END
