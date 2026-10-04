@@ -317,6 +317,28 @@ Serial.println("--- BOOT COMPLETE: Entering Main Loop ---\n"); // FOR DEBUGGING
 
 
 // ==========================================
+// TAPE LOAD FADES --- NEW FIRMWARE
+// ==========================================
+// Loading a tape pours the file straight into the buffer while the preset is still playing it,
+// so the playhead goes from the old tape to the new one with no warning = click
+// (and the flash reads hold the audio clock off in little bursts while it's going)
+// So fade everything down with the master fade first, load, then fade back up.
+// Gives up waiting after half a second in case the clock is crawling, same as the menu exit.
+void tape_fade_out() {
+    master_fade_dir = -1;
+    uint32_t fade_wait_start = millis();
+    while (master_gain > 0 && (millis() - fade_wait_start) < 500) {
+        vTaskDelay(1);
+    }
+}
+
+void tape_fade_in() {
+    master_fade_dir = 1; // the preset's own clock ticks carry it back up from here
+}
+//------------------------------------------
+
+
+// ==========================================
 // PRESET SELECTION MODE --- NEW FIRMWARE
 // ==========================================
 //------------------------------------------
@@ -442,6 +464,7 @@ void loop() {
       // Process Autoload instantly while in the menu
       if (tape_load_flag) {
           Serial.printf("\n[TAPE DECK] --- AUTOLOAD INITIATED ---\n");
+          tape_fade_out(); // NEW FIRMWARE: fade down before the tape changes underneath the playhead
           REG(I2S_CONF_REG)[0] &= ~(BIT(5)); // Pause audio stream
           
           String filename = "/tape" + String(tape_index) + ".raw";
@@ -459,6 +482,7 @@ void loop() {
           
           REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
           REG(I2S_CONF_REG)[0] |= (BIT(5)); // Resume audio stream
+          tape_fade_in(); // NEW FIRMWARE: and back up on the new tape
       }
 
       // Yield to FreeRTOS to prevent watchdog resets
@@ -599,6 +623,7 @@ void loop() {
 
   if (tape_load_flag) {
     Serial.printf("\n[TAPE DECK] --- LOAD INITIATED ---\n");
+    tape_fade_out(); // NEW FIRMWARE: fade down before the tape changes underneath the playhead
     Serial.printf("[TAPE DECK] Pausing audio engine...\n");
     REG(I2S_CONF_REG)[0] &= ~(BIT(5)); // Pause audio stream
     
@@ -623,6 +648,7 @@ void loop() {
     Serial.printf("[TAPE DECK] Resuming audio engine...\n");
     REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
     REG(I2S_CONF_REG)[0] |= (BIT(5)); // Resume audio stream
+    tape_fade_in(); // NEW FIRMWARE: and back up on the new tape
   }
 
   delay(10);
