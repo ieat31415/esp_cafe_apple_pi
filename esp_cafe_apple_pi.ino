@@ -56,8 +56,11 @@
 //if arduino was bought by a printer company is this stable?
 
 #define BYTECODES t*(t & 16384 ? 7 : 5) * (3 - (3 & t >> 9) + (3 & t >> 8)) >> (3 & -t >> (t & 4096 ? 2 : 16)) | t >> 3;
+uint8_t *dcrumb[128];
 
-#include "synths.h"
+#include "synths.h" // ieat31415's presets
+//#include "keiodak.h" // k.odk's presets
+//#include "ble.h"
 #include <LittleFS.h> //for file system needed by tape_deck preset
 
   // ------------------------------------------
@@ -226,8 +229,11 @@ void setup() {
     
     File boot_file = LittleFS.open(boot_filename, FILE_READ);
     if (boot_file) {
-        boot_file.read((uint8_t*)delaybuffb, 98304);
-        boot_file.read((uint8_t*)delaybuffa, 98304);
+        // boot_file.read((uint8_t*)delaybuffb, 98304);
+        // boot_file.read((uint8_t*)delaybuffa, 98304);
+        for(int i = 0; i < CRUMBS; i++) {
+            boot_file.read(dcrumb[i], CRUMB_BYTES);
+        }
         boot_file.close();
         Serial.println("    -> Boot Tape restored to RAM");
         audio_frozen_state = BOOT_TAPE_FROZEN;
@@ -238,7 +244,7 @@ void setup() {
         audio_frozen_state = false;
         lamp = false;
         for (int i = 0; i < DELAYSIZE; i++) dellius(i, 0, false);
-        load_drum_kit(0);
+        //load_drum_kit(0);
     }
   } 
   else {
@@ -351,7 +357,9 @@ void loop() {
     int flash_tick = 0;
 
     // The Latching Loop
-    while (preset_mode) {
+    // while (preset_mode) {
+    // CHANGED: The loop stays active until the button explicitly requests an exit
+    while (preset_mode && !exit_menu_request) {
       bool threshold_met = false;
       
       // --- LONG PRESS INDICATOR ---
@@ -440,8 +448,11 @@ void loop() {
           File file = LittleFS.open(filename, FILE_READ);
           if(file) {
               Serial.printf("[TAPE DECK] Pulling 196KB file into RAM buffers...\n");
-              file.read((uint8_t*)delaybuffb, 98304); 
-              file.read((uint8_t*)delaybuffa, 98304); 
+              // file.read((uint8_t*)delaybuffb, 98304); 
+              // file.read((uint8_t*)delaybuffa, 98304); 
+              for(int i = 0; i < CRUMBS; i++) {
+                  file.read(dcrumb[i], CRUMB_BYTES);
+              }
               file.close();
           }
           tape_load_flag = false;
@@ -456,53 +467,78 @@ void loop() {
 
     Serial.printf("Exiting mode. Loading preset index: %d\n", preset_counter);
 
-    if (presets[preset] == polyrhythms) {
-        load_drum_kit(0);
-    }
+    //if (presets[preset] == polyrhythms) {
+        //load_drum_kit(0);
+    //}
 
     // EXIT PRESET SELECTION MODE
 
     Serial.println("[EXITING] 1. Temporarily disabling button (to prevent bounce)...");
     detachInterrupt(32); // Disconnect the black button
 
+    // NEW FIRMWARE: MASTER FADE OUT
+    // The fade already started on the button release (see doubleclicker in stuff)
+    // The old preset is still plugged into the clock, so the audio keeps moving while it fades
+    // Just wait here until it hits bottom. Gives up after half a second in case the clock is crawling
+    Serial.println("[EXITING] 2. Waiting on master fade out...");
+    master_fade_dir = -1; // in case the release didn't get to it
+    uint32_t fade_wait_start = millis();
+    while (master_gain > 0 && (millis() - fade_wait_start) < 500) {
+        vTaskDelay(1);
+    }
+
     // Unplug the clock
-    Serial.println("[EXITING] 2. Detaching interrupt...");
+    Serial.println("[EXITING] 2b. Detaching interrupt...");
     detachInterrupt(2);                
     
     // Pause the water main
-    Serial.println("[EXITING] 3. Starting 10ms crossfade...");
-    // flush the incoming audio so the 64-sample RX FIFO doesn't overflow
-    int start_vol = pout; 
-    int steps = 500; 
-    
-    for (int i = 0; i <= steps; i++) {
-        // read and discard incoming audio samples
-        // prevents  overflow AND natively paces the loop to exactly 48kHz (20.8us per step)!
-        volatile uint32_t sinkhole = REG(I2S_FIFO_RD_REG)[0]; 
+    // NEW FIRMWARE: this ramp is only a backup now, for when the master fade timed out
+    // When the fade finished the outputs are already resting so it gets skipped
+    // start_vol was pout, but plenty of presets never write pout, so use what really went out the DAC
+    if (master_gain > 0) {
+        Serial.println("[EXITING] 3. Fade timed out, backup 10ms crossfade...");
+        // flush the incoming audio so the 64-sample RX FIFO doesn't overflow
+        int start_vol = last_dac; 
+        int end_vol = dac_rest >> 12; // land on the resting level, same as the master fade
+        int steps = 500; 
         
-        int current_vol = start_vol + ((2048 - start_vol) * i) / steps;
-        DACWRITER(current_vol);
-        ASHWRITER(current_vol);
+        for (int i = 0; i < steps; i++) {
+            // read and discard incoming audio samples
+            // prevents  overflow AND natively paces the loop to exactly 48kHz (20.8us per step)!
+            //volatile uint32_t sinkhole = REG(I2S_FIFO_RD_REG)[0]; 
+            
+            int current_vol = start_vol + ((end_vol - start_vol) * i) / steps;
+            DACWRITER(current_vol);
+            ASHWRITER(current_vol);
+            delayMicroseconds(20);
+        }
     }
 
     Serial.println("[EXITING] 4. Pausing I2S reading audio...");
     REG(I2S_CONF_REG)[0] &= ~(BIT(5));
 
-    Serial.println("[EXITING] 5. Crossfade complete. Loading drum samples if polyrhythms preset is selected...");
-    if (presets[preset] == polyrhythms) {
-        load_drum_kit(0);
-    }
+    // CHANGED: Safe to flip the global flags now that the clock is completely dead!
+    preset_mode = false;
+    exit_menu_request = false;
+    // Serial.println("[EXITING] 5. Crossfade complete. Loading drum samples if polyrhythms preset is selected...");
+    // if (presets[preset] == polyrhythms) {
+    //     load_drum_kit(0);
+    // }
 
     // Resume Audio Engine
-    Serial.println("[EXITING] 6. Restoring in loop mode...");
+    Serial.println("[EXITING] 5. Restoring in loop mode...");
     lamp = audio_frozen_state; 
     LAMPLIGHT_OVERRIDE; 
 
-    Serial.println("[EXITING] 7. Hardware Reset...");
+    Serial.println("[EXITING] 6. Hardware Reset...");
     REG(I2S_CONF_REG)[0] |= BIT(30);  // Set I2S_RX_FIFO_RESET
     REG(I2S_CONF_REG)[0] &= ~BIT(30); // Clear I2S_RX_FIFO_RESET
 
-    Serial.println("[EXITING] 8. Clearing and resuming I2S pipeline...");
+    // TRUE hardware flush to clear out any remaining desynced samples
+    // REG(I2S_CONF_REG)[0] |= (BIT(1) | BIT(3));  
+    // REG(I2S_CONF_REG)[0] &= ~(BIT(1) | BIT(3));
+
+    Serial.println("[EXITING] 7. Clearing and resuming I2S pipeline...");
     REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF; // Clear any clock ticks that queued up on the GPIO pin during the delay
     REG(I2S_CONF_REG)[0] |= (BIT(5)); 
 
@@ -518,6 +554,10 @@ void loop() {
 
     // Load the new preset while everything is paused
     Serial.println("[EXITING] 10. Attaching clock to new preset...");
+    // NEW FIRMWARE: MASTER FADE IN
+    // Arm the fade before plugging in, so the new preset's very first tick comes out at rest
+    master_gain = 0;
+    master_fade_dir = 1;
     PRESETTER(presets[preset]);
 
     Serial.println("[EXITING] 11. Re-attaching button..."); 
@@ -540,8 +580,11 @@ void loop() {
     File file = LittleFS.open(filename, FILE_WRITE);
     if(file) {
         Serial.printf("[TAPE DECK] Burning 196KB RAM buffers to Flash...\n");
-        file.write((const uint8_t*)delaybuffb, 98304); // Write first half
-        file.write((const uint8_t*)delaybuffa, 98304); // Write second half
+        // file.write((const uint8_t*)delaybuffb, 98304); // Write first half
+        // file.write((const uint8_t*)delaybuffa, 98304); // Write second half
+        for(int i = 0; i < CRUMBS; i++) {
+            file.write(dcrumb[i], CRUMB_BYTES);
+        }
         file.close();
         Serial.printf("[TAPE DECK] Save successful!\n");
     } else {
@@ -565,8 +608,11 @@ void loop() {
     File file = LittleFS.open(filename, FILE_READ);
     if(file) {
         Serial.printf("[TAPE DECK] Pulling 196KB file into RAM buffers...\n");
-        file.read((uint8_t*)delaybuffb, 98304); // Load first half
-        file.read((uint8_t*)delaybuffa, 98304); // Load second half
+        // file.read((uint8_t*)delaybuffb, 98304); // Load first half
+        // file.read((uint8_t*)delaybuffa, 98304); // Load second half
+        for(int i = 0; i < CRUMBS; i++) {
+            file.read(dcrumb[i], CRUMB_BYTES);
+        }
         file.close();
         Serial.printf("[TAPE DECK] Load successful!\n");
     } else {

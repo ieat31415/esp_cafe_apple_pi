@@ -1,4 +1,4 @@
-
+#pragma once
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,6 +19,7 @@
 #define ADC1_PATT (0x6C<<24)
 #define ADC2_PATT (0x0D<<24)
 
+bool cafe_no_ble = true; // Allows control of whether or not to include BLE code
 
 #define BIT(x) ((uint32_t) 1U << (x))
 #define REG(x) ((volatile uint32_t *) (x))
@@ -167,6 +168,9 @@ static inline void spin(volatile unsigned long count) {
 static uint32_t dmall[3];
 
 void initDIG() {
+
+if (cafe_no_ble) { CHANG(0x3FF000CC, 0) }
+
   //CHANG(SENS_SAR_ATTEN1_REG,0x2<<12)
   //CHANG(SENS_SAR_ATTEN2_REG,0x2)
   CHANG(DPORT_WIFI_CLK_EN_REG,0)
@@ -234,7 +238,8 @@ CHANG(SENS_SAR_MEAS_CTRL_REG,(uint32_t)0xFF07338F) //default
    //seems to not need bitmap
  
  
-   #define CTRLJING BIT(26)|(CLKDIVMAGIC)|BIT(6)|BIT(2)|BIT(3)
+   //#define CTRLJING BIT(26)|(CLKDIVMAGIC)|BIT(6)|BIT(2)|BIT(3)
+   #define CTRLJING (BIT(26)|(CLKDIVMAGIC)|BIT(6)|BIT(2)|(cafe_no_ble ? BIT(3) : 0))
    
    #define CTRLPATT 0 //BIT(15)|BIT(19)
   #define CTRLJONG BIT(24)|BIT(23)

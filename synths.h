@@ -13,9 +13,12 @@ void morph_to_8bit() {
     
     int src_len = current_buffer_len;
     if (src_len <= 0 || src_len > 65536) src_len = 20000;
+
+    // Use the end of the 131k buffer as a safe stash to prevent memory overlap
+    int stash_start = 131072 - src_len;
     
     // Convert audio (16-bit Signed AC to 12-bit Unsigned DC)
-    // Write to the Safe Zone (Indices 0 to 65535 map to delaybuffb)
+    //// Write to the Safe Zone (Indices 0 to 65535 map to delaybuffb)
     for (int i = 0; i < src_len; i++) {
         int read_idx = (current_buffer_head + i) % src_len;
         
@@ -23,7 +26,17 @@ void morph_to_8bit() {
         //int val_12bit = buffer_16bit[i] + 2048; 
         if (val_12bit > 4095) val_12bit = 4095;
         if (val_12bit < 0) val_12bit = 0;
-        dellius(i, val_12bit, false); 
+        //dellius(i, val_12bit, false); 
+        //dellius(stash_start + i, val_12bit, false);
+        dwrite(stash_start + i, val_12bit);
+    }
+
+    // Move from Stast to actual start of buffer
+    for (int i = 0; i < src_len; i++) {
+        int val = dread(stash_start + i);
+        dwrite(i, val);
+        // int val = dellius(stash_start + i, 0, true);
+        // dellius(i, val, false);
     }
 
     // --- Cross fading the reverb tails ---
@@ -33,10 +46,14 @@ void morph_to_8bit() {
     if (tile_fade > src_len / 2) tile_fade = src_len / 2; 
 
     for (int i = 0; i < tile_fade; i++) {
-        int tail_raw = dellius(src_len - tile_fade + i, 0, true);
-        int head_raw = dellius(i, 0, true);
+        int tail_raw = dread(src_len - tile_fade + i);
+        int head_raw = dread(i);
         int mix_raw = ((tail_raw * (tile_fade - i)) + (head_raw * i)) / tile_fade;
-        dellius(i, mix_raw, false);
+        dwrite(i, mix_raw);
+        // int tail_raw = dellius(src_len - tile_fade + i, 0, true);
+        // int head_raw = dellius(i, 0, true);
+        // int mix_raw = ((tail_raw * (tile_fade - i)) + (head_raw * i)) / tile_fade;
+        // dellius(i, mix_raw, false);
     }
 
     src_len -= tile_fade; // shrink the loop by the fade length
@@ -48,22 +65,40 @@ void morph_to_8bit() {
     int fade_start = 131072 - fade_len;
 
     for (int i = src_len; i < fade_start; i++) {
-        int val = dellius(i % src_len, 0, true);
-        dellius(i, val, false);
+        int val = dread(i % src_len);
+        dwrite(i, val);
+        // int val = dellius(i % src_len, 0, true);
+        // dellius(i, val, false);
     }
 
     // Full Loop Boundary Crossfade 
     // Blend the very end of the 131k buffer back into the audio that precedes index 0
     for (int i = 0; i < fade_len; i++) {
         int write_pos = fade_start + i;
-        int tail_raw = dellius(write_pos % src_len, 0, true);
-        int head_precursor_raw = dellius(src_len - fade_len + i, 0, true);
+
+        int tail_raw = dread(write_pos % src_len);
+        int head_precursor_raw = dread(src_len - fade_len + i);
         int mix_raw = ((tail_raw * (fade_len - i)) + (head_precursor_raw * i)) / fade_len;
-        dellius(write_pos, mix_raw, false);
+        dwrite(write_pos, mix_raw);
+
+        // int tail_raw = dellius(write_pos % src_len, 0, true);
+        // int head_precursor_raw = dellius(src_len - fade_len + i, 0, true);
+        // int mix_raw = ((tail_raw * (fade_len - i)) + (head_precursor_raw * i)) / fade_len;
+        // dellius(write_pos, mix_raw, false);
     }
     
     current_buffer_owner = 0;
     current_buffer_len = 131072;
+
+    // Full Hardware Reset for I2S Engine to realign channels
+    REG(I2S_CONF_REG)[0] |= BIT(30);  // Set I2S_RX_FIFO_RESET
+    REG(I2S_CONF_REG)[0] &= ~BIT(30); // Clear I2S_RX_FIFO_RESET
+    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+    
+    // Hardware Spin-up Loop to pack the FIFO with fresh audio
+    for (volatile int i = 0; i < 100000; i++) {
+        __asm__ __volatile__ ("nop");
+    }
 }
 
 void morph_to_16bit(int new_owner, int target_len) {
@@ -79,21 +114,43 @@ void morph_to_16bit(int new_owner, int target_len) {
         for (int i = 0; i < fade_len; i++) {
             int precursor_idx = current_buffer_head - fade_len + i;
             if (precursor_idx < 0) precursor_idx += 131072;
-            precursor_cache[i] = (int16_t)(dellius(precursor_idx, 0, true) - 2048);
+            precursor_cache[i] = (int16_t)(dread(precursor_idx) - 2048);
+            //precursor_cache[i] = (int16_t)(dellius(precursor_idx, 0, true) - 2048);
         }
 
-        // STEP 1: SAVE TO SCRATCHPAD
+        // Use the end of the 131k buffer as a safe stash
+        int stash_start = 131072 - target_len;
+
+        // STEP 1: SAVE ALIGNED 12-BIT TO STASH
         for (int i = 0; i < target_len; i++) {
             int read_idx = (current_buffer_head + i) % 131072;
-            int val_12bit = dellius(read_idx, 0, true);
-            dellius(i, val_12bit, false); 
+            int val_12bit = dread(read_idx);
+            dwrite(stash_start + i, val_12bit);
+            // int val_12bit = dellius(read_idx, 0, true);
+            // dellius(stash_start + i, val_12bit, false); 
         }
 
-        // STEP 2: UNPACK FROM SCRATCHPAD
+        // STEP 2: UNPACK FROM STASH INTO 16-BIT BUFFER
+        // Since stash is > 100,000 and buffer_16bit writes to 0-30,000, they physically cannot overlap
         for (int i = 0; i < target_len; i++) {
-            int val_12bit = dellius(i, 0, true);
-            buffer_16bit[i] = (int16_t)(val_12bit - 2048); 
+            int val_12bit = dread(stash_start + i);
+            buffer_16bit[i] = (int16_t)(val_12bit - 2048);
+            // int val_12bit = dellius(stash_start + i, 0, true);
+            // buffer_16bit[i] = (int16_t)(val_12bit - 2048); 
         }
+
+        // // STEP 1: SAVE TO SCRATCHPAD
+        // for (int i = 0; i < target_len; i++) {
+        //     int read_idx = (current_buffer_head + i) % 131072;
+        //     int val_12bit = dellius(read_idx, 0, true);
+        //     dellius(i, val_12bit, false); 
+        // }
+
+        // // STEP 2: UNPACK FROM SCRATCHPAD
+        // for (int i = 0; i < target_len; i++) {
+        //     int val_12bit = dellius(i, 0, true);
+        //     buffer_16bit[i] = (int16_t)(val_12bit - 2048); 
+        // }
 
         // STEP 3: PRECURSOR CROSSFADE
         for (int i = 0; i < fade_len; i++) {
@@ -130,6 +187,16 @@ void morph_to_16bit(int new_owner, int target_len) {
     
     current_buffer_owner = new_owner;
     current_buffer_len = target_len;
+
+    // Full Hardware Reset for I2S Engine to realign channels
+    REG(I2S_CONF_REG)[0] |= BIT(30);  // Set I2S_RX_FIFO_RESET
+    REG(I2S_CONF_REG)[0] &= ~BIT(30); // Clear I2S_RX_FIFO_RESET
+    REG(I2S_INT_CLR_REG)[0] = 0xFFFFFFFF;
+    
+    // Hardware Spin-up Loop to pack the FIFO with fresh audio
+    for (volatile int i = 0; i < 100000; i++) {
+        __asm__ __volatile__ ("nop");
+    }
 }
 
 //////BEGIN PRESETS//////////////////////////////////////////////////////////////////////////////////
@@ -439,12 +506,12 @@ void IRAM_ATTR coco_mod() {
     if ((t & clock_mask) < 2000) { 
         if (t < window_size) {
             // checks if we are in the very first window of the buffer
-            YELLOW_AUDIO(4095); // 3.3V accent
+            YELLOW_CLOCK(4095); // 3.3V accent
         } else {
-            YELLOW_AUDIO(3000); // 2.4V clock
+            YELLOW_CLOCK(3000); // 2.4V clock
         }
     } else {
-        YELLOW_AUDIO(0); 
+        YELLOW_CLOCK(0); 
     }
     
     // Tells the OS where the loop is so transfers never grab silence
@@ -1136,12 +1203,44 @@ int svf_bandpass_int(int input, int f, int q, int *band, int *low) {
 void IRAM_ATTR formant() {
 
 morph_to_8bit(); //needed for buffer translation
+
+ // --- WAKE UP BLOCK --- NEW FIRMWARE
+ // the filters remember whatever they were ringing on the last time formant ran
+ // so clear them out when coming in from the menu
+ // and sync skip to the jack so a leftover lastskp from another preset doesn't jump the playhead
+ static bool was_in_menu = false;
+ static bool is_first_run = true;
+ static bool last_frozen = false;
+
+ if (preset_mode) {
+     was_in_menu = true;
+ } else if (was_in_menu || is_first_run) {
+     was_in_menu = false;
+     is_first_run = false;
+     last_frozen = audio_frozen_state; // already frozen coming out of the menu, no crossfade needed
+
+     f1_band = 0; f1_low = 0;
+     f2_band = 0; f2_low = 0;
+     f3_band = 0; f3_low = 0;
+
+     if (SKIPPERAT) { lastskp = 1; delayskp = t; }
+     else lastskp = 0;
+ }
  
  // read inputs
  int audio_in = ADCREADER;      // audio input
  int earth_cv = EARTHREAD;      // earth
 
  // get audio from delay
+ // CROSSFADE --- NEW FIRMWARE
+ // same as coco_mod, crossfade the tape write when freezing/unfreezing
+ // otherwise the write cuts off dead and leaves a click on the tape
+ // (this includes the auto freeze when the menu is exited)
+ if (audio_frozen_state != last_frozen) {
+     last_frozen = audio_frozen_state;
+     TRIGGER_CROSSFADE(audio_frozen_state);
+ }
+
  //int raw_audio = dellius(t, audio_in, lamp); //TO BE REPLACED BELOW TO ALLOW FOR BUFFER TRANSFER
  int raw_audio = dellius(t, audio_in, audio_frozen_state);
  
@@ -2120,6 +2219,7 @@ void IRAM_ATTR reverb_granular() {
     if (current_buffer_owner != 3) {
         morph_to_16bit(3, 30000);
         neb_write = 0;
+        current_buffer_head = 0; // NEW FIRMWARE: morph lays the loop out starting at 0
     }
 
     // Grain States
@@ -2139,6 +2239,10 @@ void IRAM_ATTR reverb_granular() {
     // Input state
     static int skip_integrator = 0;
     static bool skip_gate = false;
+
+    // NEW FIRMWARE: buffer write crossfade
+    // 0 = not writing (frozen), GRAN_WRITE_FADE = writing full on
+    static int gran_write_fade = 0;
     
     // --- WAKE UP BLOCK ---
     static bool was_in_menu = false;
@@ -2154,6 +2258,9 @@ void IRAM_ATTR reverb_granular() {
         bool s_raw = SKIPPERAT;
         skip_integrator = s_raw ? 2000 : 0;
         skip_gate = s_raw;
+
+        // NEW FIRMWARE: come in not writing, it fades up from here if unfrozen
+        gran_write_fade = 0;
     }
 
     // ============================
@@ -2271,15 +2378,43 @@ void IRAM_ATTR reverb_granular() {
     int ac_in = raw_in - 2048;
     ac_in = (ac_in * 3) >> 1; 
 
+    // NEW FIRMWARE: WRITE CROSSFADE
+    // Freezing used to cut the write off dead, and unfreezing slammed new audio
+    // right up against the old. Both leave a step in the tape that you hear as a
+    // click once it goes back to coco_mod. Now the write fades in and out against
+    // what's already on the tape, same idea as the coco crossfade.
+    // Covers the button, skip, and the auto freeze when leaving the preset menu
+    #define GRAN_WRITE_FADE 512 // ~10ms at 48kHz, needs to finish inside the master fade
     if (!freeze) {
+        if (gran_write_fade < GRAN_WRITE_FADE) gran_write_fade++;
+    } else {
+        if (gran_write_fade > 0) gran_write_fade--;
+    }
+
+    //if (!freeze) { //ORIGINAL, replaced with the write crossfade
+    if (gran_write_fade > 0) {
         int32_t mix_write = ac_in; 
         if (mix_write > 20000) mix_write = 20000;
         if (mix_write < -20000) mix_write = -20000;
+
+        // blend with what's on the tape while fading
+        if (gran_write_fade < GRAN_WRITE_FADE) {
+            int32_t on_tape = buffer_16bit[neb_write];
+            mix_write = ((mix_write * gran_write_fade) + (on_tape * (GRAN_WRITE_FADE - gran_write_fade))) / GRAN_WRITE_FADE;
+        }
         buffer_16bit[neb_write] = (int16_t)mix_write;
     }
     
     neb_write++;
     if (neb_write >= 30000) neb_write = 0;
+
+    // NEW FIRMWARE: tell the OS where the loop starts
+    // right after the last thing written = the oldest audio on the tape
+    // so when coco_mod unrolls the buffer, the seam sits at the loop point where it gets crossfaded
+    // (it was never set here, so morph_to_8bit started from a leftover coco playhead
+    // and put the seam in the middle of the loop)
+    // when frozen it stays put, since nothing new is going on the tape
+    if (gran_write_fade > 0) current_buffer_head = neb_write;
     
     // ============================
     // OUTPUTS
@@ -3384,12 +3519,12 @@ void IRAM_ATTR external_sync() {
 
     if ((virtual_t & clock_mask) < 2000) { 
         if (virtual_t < window_size) {
-            YELLOW_AUDIO(4095); // 3.3V accent
+            YELLOW_CLOCK(4095); // 3.3V accent
         } else {
-            YELLOW_AUDIO(3000); // 2.4V clock
+            YELLOW_CLOCK(3000); // 2.4V clock
         }
     } else {
-        YELLOW_AUDIO(0); 
+        YELLOW_CLOCK(0); 
     }
 
     current_buffer_head = sync_head; // Update the OS with the tape splice location
@@ -4905,9 +5040,31 @@ struct PhaseHead {
     int tail_pos;
     int tail_timer;
     bool tail_dir_rev;
+    // NEW FIRMWARE: second tail, holds a tail that was still fading when a new one started
+    bool tail2_active;
+    int tail2_pos;
+    int tail2_timer;
+    bool tail2_dir_rev;
 };
 
 static struct PhaseHead p_heads[PH_VOICES];
+
+// NEW FIRMWARE: start a tail crossfade
+// there's only one main tail, so a skip landing while a wrap was still fading (or the other way round)
+// used to throw the fading tail away mid-crossfade = click
+// now the fading tail moves to the second slot and finishes on its own
+static inline void ph_start_tail(struct PhaseHead &h, int pos, bool rev) {
+    if (h.tail_active) {
+        h.tail2_active = true;
+        h.tail2_pos = h.tail_pos;
+        h.tail2_timer = h.tail_timer;
+        h.tail2_dir_rev = h.tail_dir_rev;
+    }
+    h.tail_active = true;
+    h.tail_pos = pos;
+    h.tail_timer = PH_XFADE;
+    h.tail_dir_rev = rev;
+}
 static int ph_rec_len = 0; 
 static int32_t ph_dc_sum = 2048 * 4096;
 
@@ -4955,6 +5112,7 @@ void IRAM_ATTR phasing() {
         for(int i=0; i<PH_VOICES; i++) {
             p_heads[i].pos = 0;
             p_heads[i].tail_active = false;
+            p_heads[i].tail2_active = false; // NEW FIRMWARE
         }
         
         last_frozen = audio_frozen_state;
@@ -5009,6 +5167,7 @@ void IRAM_ATTR phasing() {
             for(int i=0; i<PH_VOICES; i++) {
                 p_heads[i].pos = 0;
                 p_heads[i].tail_active = false;
+                p_heads[i].tail2_active = false; // NEW FIRMWARE
             }
         } else {
             // PLAY -> REC
@@ -5066,6 +5225,7 @@ void IRAM_ATTR phasing() {
                 for(int i=0; i<PH_VOICES; i++) {
                     p_heads[i].pos = 0;
                     p_heads[i].tail_active = false;
+                    p_heads[i].tail2_active = false; // NEW FIRMWARE
                 }
             }
         } else {
@@ -5088,18 +5248,21 @@ void IRAM_ATTR phasing() {
             for(int i=0; i<PH_VOICES; i++) {
                  int my_len = ph_rec_len - (i * delta);
                  if (my_len < 2000) my_len = 2000;
+                 if (my_len > ph_rec_len - PH_XFADE) my_len = ph_rec_len - PH_XFADE; // NEW FIRMWARE: room for the tail
                  
                  // Snapshot into ghost tail for crossfade
-                 p_heads[i].tail_active = true;
-                 p_heads[i].tail_pos = p_heads[i].pos; 
-                 p_heads[i].tail_timer = PH_XFADE;
-                 p_heads[i].tail_dir_rev = !reverse_mode; // Snapshot the OLD direction!
+                 // NEW FIRMWARE: the old direction is only the opposite one when flip changed it
+                 // on a plain skip the tail was turning around mid-crossfade = click
+                 // (was tail_dir_rev = !reverse_mode every time)
+                 ph_start_tail(p_heads[i], p_heads[i].pos, direction_changed ? !reverse_mode : reverse_mode);
                  
                  // If SKIP triggered, jump to a new random location
                  // (If only direction changed, position stays the same but crossfades into reverse)
                  if (trigger_rising) {
                      seed = (seed * 1664525 + 1013904223); 
                      p_heads[i].pos = seed % my_len;
+                     // NEW FIRMWARE: backwards loops live above PH_XFADE (see the wrap below)
+                     if (reverse_mode && p_heads[i].pos < PH_XFADE) p_heads[i].pos += PH_XFADE;
                  }
             }
         }
@@ -5109,6 +5272,14 @@ void IRAM_ATTR phasing() {
         for (int i=0; i<PH_VOICES; i++) {
             int my_len = ph_rec_len - (i * delta);
             if (my_len < 2000) my_len = 2000; 
+
+            // NEW FIRMWARE: leave room for the tail
+            // the wrap crossfade lets a ghost tail keep playing past the end of the loop for PH_XFADE
+            // if the loop runs right up to the end of the recording (voice 0 always, and the others
+            // whenever earth is low / just starting to shrink them), the tail ran off the end and got
+            // snapped to the start of the tape mid-crossfade = click
+            // so the loop stops PH_XFADE short and the tail plays out those last samples instead
+            if (my_len > ph_rec_len - PH_XFADE) my_len = ph_rec_len - PH_XFADE;
 
             // MAIN VOICE
             int raw = dellius(p_heads[i].pos, 0, true);
@@ -5131,6 +5302,12 @@ void IRAM_ATTR phasing() {
 
             // TAIL VOICE (Skip & Loop Wrap Crossfade)
             if (p_heads[i].tail_active) {
+                // NEW FIRMWARE: tail safety
+                // if a tail still ends up outside the recording (like heads starting at 0 going backwards)
+                // bounce it back off the edge instead of jumping it to the other end of the tape
+                if (p_heads[i].tail_pos >= ph_rec_len) { p_heads[i].tail_pos = ph_rec_len - 1; p_heads[i].tail_dir_rev = true; }
+                if (p_heads[i].tail_pos < 0)           { p_heads[i].tail_pos = 0;              p_heads[i].tail_dir_rev = false; }
+
                 int t_raw = dellius(p_heads[i].tail_pos, 0, true);
                 int32_t tail_sample = t_raw - 2048;
                 
@@ -5145,11 +5322,30 @@ void IRAM_ATTR phasing() {
                 else                         p_heads[i].tail_pos++;
                 
                 // Safe-wrap tail to the completely RECORDED length
-                if (p_heads[i].tail_pos >= ph_rec_len) p_heads[i].tail_pos = 0;
-                if (p_heads[i].tail_pos < 0) p_heads[i].tail_pos = ph_rec_len - 1;
+                // if (p_heads[i].tail_pos >= ph_rec_len) p_heads[i].tail_pos = 0; //ORIGINAL, this jump was the click
+                // if (p_heads[i].tail_pos < 0) p_heads[i].tail_pos = ph_rec_len - 1;
+                // (now handled by the bounce at the top of the tail block)
 
                 p_heads[i].tail_timer--;
                 if (p_heads[i].tail_timer <= 0) p_heads[i].tail_active = false;
+            }
+
+            // NEW FIRMWARE: SECOND TAIL
+            // the older tail finishes fading out over the top of everything else
+            // dread is read only so it never touches the tape
+            if (p_heads[i].tail2_active) {
+                if (p_heads[i].tail2_pos >= ph_rec_len) { p_heads[i].tail2_pos = ph_rec_len - 1; p_heads[i].tail2_dir_rev = true; }
+                if (p_heads[i].tail2_pos < 0)           { p_heads[i].tail2_pos = 0;              p_heads[i].tail2_dir_rev = false; }
+
+                int32_t tail2_sample = dread(p_heads[i].tail2_pos) - 2048;
+                int fade_out2 = p_heads[i].tail2_timer;
+                head_sample = ((head_sample * (PH_XFADE - fade_out2)) + (tail2_sample * fade_out2)) / PH_XFADE;
+
+                if (p_heads[i].tail2_dir_rev) p_heads[i].tail2_pos--;
+                else                          p_heads[i].tail2_pos++;
+
+                p_heads[i].tail2_timer--;
+                if (p_heads[i].tail2_timer <= 0) p_heads[i].tail2_active = false;
             }
 
             mix += head_sample;
@@ -5158,20 +5354,17 @@ void IRAM_ATTR phasing() {
             if (!reverse_mode) {
                 p_heads[i].pos++;
                 if (p_heads[i].pos >= my_len) {
-                    p_heads[i].tail_active = true;
-                    p_heads[i].tail_pos = p_heads[i].pos; 
-                    p_heads[i].tail_dir_rev = reverse_mode; // Snapshot current direction
-                    p_heads[i].tail_timer = PH_XFADE;
+                    ph_start_tail(p_heads[i], p_heads[i].pos, reverse_mode); // NEW FIRMWARE: Snapshot current direction
                     p_heads[i].pos = 0; 
                 }
             } else {
                 p_heads[i].pos--;
                 // Catch out-of-bounds jumps if Earth dynamically shrinks the loop
-                if (p_heads[i].pos < 0 || p_heads[i].pos >= my_len) { 
-                    p_heads[i].tail_active = true;
-                    p_heads[i].tail_pos = p_heads[i].pos; 
-                    p_heads[i].tail_dir_rev = reverse_mode; // Snapshot current direction
-                    p_heads[i].tail_timer = PH_XFADE;
+                // if (p_heads[i].pos < 0 || p_heads[i].pos >= my_len) { //ORIGINAL
+                // NEW FIRMWARE: backwards wraps PH_XFADE above the bottom
+                // so the tail has real audio to play going down instead of falling off the start of the tape
+                if (p_heads[i].pos < PH_XFADE || p_heads[i].pos >= my_len) { 
+                    ph_start_tail(p_heads[i], p_heads[i].pos, reverse_mode); // NEW FIRMWARE: Snapshot current direction
                     p_heads[i].pos = my_len - 1;
                 }
             }
@@ -7356,12 +7549,12 @@ void IRAM_ATTR groovebox() {
     if (dm_step_timer < (ACTIVE_BPM >> 1)) {
         // Accent the very first step of the sequence
         if (dm_step == 0) {
-            YELLOW_AUDIO(4095); // 3.3V ACCENT
+            YELLOW_CLOCK(4095); // 3.3V ACCENT
         } else {
-            YELLOW_AUDIO(3000); // 2.4V clock
+            YELLOW_CLOCK(3000); // 2.4V clock
         }
     } else {
-        YELLOW_AUDIO(0);
+        YELLOW_CLOCK(0);
     }
 
     
@@ -7405,9 +7598,12 @@ void IRAM_ATTR groovebox() {
 
 /////-------SAMPLE MANAGEMENT
 // global pointers defined in stuff.h
-extern uint8_t *current_kick[3];
-extern uint8_t *current_snare[3];
-extern uint8_t *current_hat[3];
+// extern uint8_t *current_kick[3];
+// extern uint8_t *current_snare[3];
+// extern uint8_t *current_hat[3];
+extern const uint8_t *current_kick[3];
+extern const uint8_t *current_snare[3];
+extern const uint8_t *current_hat[3];
 extern int len_kick[3];
 extern int len_snare[3];
 extern int len_hat[3];
@@ -7540,9 +7736,12 @@ const uint8_t t_hat[16][192] = {
 void IRAM_ATTR polyrhythms() {
 
     //SAMPLE MANAGEMENT POINTER
-    static uint8_t *k_ptr = NULL; 
-    static uint8_t *s_ptr = NULL; 
-    static uint8_t *h_ptr = NULL;
+    // static uint8_t *k_ptr = NULL; 
+    // static uint8_t *s_ptr = NULL; 
+    // static uint8_t *h_ptr = NULL;
+    static const uint8_t *k_ptr = NULL; 
+    static const uint8_t *s_ptr = NULL; 
+    static const uint8_t *h_ptr = NULL;
     //END
 
     static uint32_t k_len=0, s_len=0, h_len=0;
@@ -7702,12 +7901,12 @@ void IRAM_ATTR polyrhythms() {
             
             // if DOWNBEAT (1 Bar = 27,720,000) accent pulse
             if ((master_bar % 27720000) < 1732500) { 
-                YELLOW_AUDIO(4095); // 3.3V ACCENT (for reset)
+                YELLOW_CLOCK(4095); // 3.3V ACCENT (for reset)
             } else {
-                YELLOW_AUDIO(3000); // 2.4V clock
+                YELLOW_CLOCK(3000); // 2.4V clock
             }
         } else {
-            YELLOW_AUDIO(0);
+            YELLOW_CLOCK(0);
         }
     } 
 
@@ -8038,6 +8237,17 @@ void IRAM_ATTR window() {
     static int window_anchor = 0;
     static int smoothed_earth = -1;
 
+    // NEW FIRMWARE: wrap crossfade
+    // a ghost playhead keeps going past the edge of the window while the real one starts over
+    // there's a second ghost so a wrap that lands mid-crossfade (like flipping right after a wrap)
+    // lets the first one finish fading instead of cutting it off
+    static int wrap_ghost_t = 0;
+    static int wrap_xfade = 0;
+    static bool wrap_ghost_rev = false;
+    static int wrap_ghost2_t = 0;
+    static int wrap_xfade2 = 0;
+    static bool wrap_ghost2_rev = false;
+
     if (preset_mode) {
         was_in_menu = true;
     } else if (was_in_menu || is_first_run) {
@@ -8046,6 +8256,8 @@ void IRAM_ATTR window() {
         last_frozen = audio_frozen_state;
         window_anchor = t; //sets playhead to where it was in previous preset from preset selection mode
         smoothed_earth = -1; //earth smoothing to keep buffer at max size on boot
+        wrap_xfade = 0; // no leftover crossfade from last time
+        wrap_xfade2 = 0;
     }
 
     DACWRITER(pout)
@@ -8107,11 +8319,59 @@ void IRAM_ATTR window() {
     // Calculates the playhead relative to the window
     int local_t = (t - window_anchor) & 0x1FFFF;
     if (local_t >= coco_window_size) {
-        t = window_anchor;
-        local_t = 0;
+        // NEW FIRMWARE: WRAP CROSSFADE
+        // jumping back to the start of the window was a hard cut, one click per loop
+        // (and even the biggest window is a hair short of the whole buffer so it clicked there too)
+        // the ghost picks up right where the playhead would have gone and fades out
+        // while the playhead fades in from its new spot. Also smooths earth shrinking the window.
+        #define WINDOW_WRAP_FADE 512 // ~10ms at 48kHz, keep it under COCO_WINDOW_MIN
+        if (wrap_xfade > 0) {
+            // still fading the last one, move it to the second ghost so it can finish
+            wrap_ghost2_t = wrap_ghost_t;
+            wrap_xfade2 = wrap_xfade;
+            wrap_ghost2_rev = wrap_ghost_rev;
+        }
+        wrap_ghost_t = t;
+        wrap_xfade = WINDOW_WRAP_FADE;
+        wrap_ghost_rev = FLIPPERAT; // ghost keeps the direction it started with
+
+        // t = window_anchor; //ORIGINAL, only wrapped going forward
+        // local_t = 0;
+        // NEW FIRMWARE: wrap in both directions
+        // going backwards (flip high) one step behind the anchor reads as way past the end of
+        // the window, so it got sent back to the anchor every tick and sat on one sample = silence
+        // now backwards wraps around to the far end of the window instead
+        if (FLIPPERAT) {
+            local_t = coco_window_size - 1;
+            t = (window_anchor + local_t) & 0x1FFFF;
+        } else {
+            t = window_anchor;
+            local_t = 0;
+        }
     }
 
     pout=dellius(t,gyo,audio_frozen_state);
+
+    // NEW FIRMWARE: blend in the ghost while the wrap crossfade runs
+    // dread is read only, so the ghost never writes on the tape
+    if (wrap_xfade > 0) {
+        int ghost = dread(wrap_ghost_t);
+        pout = ((pout * (WINDOW_WRAP_FADE - wrap_xfade)) + (ghost * wrap_xfade)) / WINDOW_WRAP_FADE;
+        if (wrap_ghost_rev) wrap_ghost_t--;
+        else wrap_ghost_t++;
+        wrap_ghost_t &= 0x1FFFF;
+        wrap_xfade--;
+    }
+    // second ghost fades out over the top of all that
+    if (wrap_xfade2 > 0) {
+        int ghost2 = dread(wrap_ghost2_t);
+        pout = ((pout * (WINDOW_WRAP_FADE - wrap_xfade2)) + (ghost2 * wrap_xfade2)) / WINDOW_WRAP_FADE;
+        if (wrap_ghost2_rev) wrap_ghost2_t--;
+        else wrap_ghost2_t++;
+        wrap_ghost2_t &= 0x1FFFF;
+        wrap_xfade2--;
+    }
+
     if (FLIPPERAT) t--;
     else t++;
     t &= 0x1FFFF; 
@@ -8130,10 +8390,10 @@ void IRAM_ATTR window() {
     ASHWRITER(pout);
 
     if ((local_t) < 2000) { 
-        if (local_t < 8192) { YELLOW_AUDIO(4095); }
-        else { YELLOW_AUDIO(3000); }
+        if (local_t < 8192) { YELLOW_CLOCK(4095); }
+        else { YELLOW_CLOCK(3000); }
     } else {
-        YELLOW_AUDIO(0);
+        YELLOW_CLOCK(0);
     }
 
     REG(I2S_CONF_REG)[0] &= ~(BIT(5));
@@ -8312,10 +8572,10 @@ void IRAM_ATTR splicer() {
     if (t_relative < 0) t_relative = -t_relative;
     
     if (t_relative < 2000) {
-        if (t_relative < (window_size >> 4)) { YELLOW_AUDIO(4095); }
-        else { YELLOW_AUDIO(3000); }
+        if (t_relative < (window_size >> 4)) { YELLOW_CLOCK(4095); }
+        else { YELLOW_CLOCK(3000); }
     } else {
-        YELLOW_AUDIO(0);
+        YELLOW_CLOCK(0);
     }
 
     REG(I2S_CONF_REG)[0] &= ~(BIT(5));
@@ -8350,15 +8610,30 @@ void IRAM_ATTR reverb_feedback() {
     }
 
     // POINTERS TO SHARED BUFFER
+    // #define L0 1031
+    // #define L1 1543
+    // #define L2 2111
+    // #define L3 2311
+
+    // int16_t* dl0 = &buffer_16bit[0];
+    // int16_t* dl1 = &buffer_16bit[L0];
+    // int16_t* dl2 = &buffer_16bit[L0 + L1];
+    // int16_t* dl3 = &buffer_16bit[L0 + L1 + L2];
+
+    // 16-BIT INDEX MACROS (Safe across non-contiguous 1.5 KB chunks!)
     #define L0 1031
     #define L1 1543
     #define L2 2111
     #define L3 2311
 
-    int16_t* dl0 = &buffer_16bit[0];
-    int16_t* dl1 = &buffer_16bit[L0];
-    int16_t* dl2 = &buffer_16bit[L0 + L1];
-    int16_t* dl3 = &buffer_16bit[L0 + L1 + L2];
+    #define READ_DL0(p) buffer_16bit[p]
+    #define WRITE_DL0(p, val) buffer_16bit[p] = (val)
+    #define READ_DL1(p) buffer_16bit[L0 + (p)]
+    #define WRITE_DL1(p, val) buffer_16bit[L0 + (p)] = (val)
+    #define READ_DL2(p) buffer_16bit[L0 + L1 + (p)]
+    #define WRITE_DL2(p, val) buffer_16bit[L0 + L1 + (p)] = (val)
+    #define READ_DL3(p) buffer_16bit[L0 + L1 + L2 + (p)]
+    #define WRITE_DL3(p, val) buffer_16bit[L0 + L1 + L2 + (p)] = (val)
     
     static int p0 = 0, p1 = 0, p2 = 0, p3 = 0;
     static int32_t lpf0 = 0, lpf1 = 0, lpf2 = 0, lpf3 = 0;
@@ -8462,16 +8737,20 @@ void IRAM_ATTR reverb_feedback() {
     if (idx0_a < 0) idx0_a += L0;
     int idx0_b = idx0_a - 1;
     if (idx0_b < 0) idx0_b += L0;
-    int32_t d0 = ((dl0[idx0_a] * (4096 - frac)) + (dl0[idx0_b] * frac)) >> 12;
+    //int32_t d0 = ((READ_DL0(idx0_a) * (4096 - frac)) + (dl0[idx0_b] * frac)) >> 12;
+    int32_t d0 = ((READ_DL0(idx0_a) * (4096 - frac)) + (READ_DL0(idx0_b) * frac)) >> 12;
 
     int idx1_a = p1 - (10 - offset);
     if (idx1_a < 0) idx1_a += L1;
     int idx1_b = idx1_a - 1;
     if (idx1_b < 0) idx1_b += L1;
-    int32_t d1 = ((dl1[idx1_a] * frac) + (dl1[idx1_b] * (4096 - frac))) >> 12;
+    //int32_t d1 = ((dl1[idx1_a] * frac) + (dl1[idx1_b] * (4096 - frac))) >> 12;
+    int32_t d1 = ((READ_DL1(idx1_a) * frac) + (READ_DL1(idx1_b) * (4096 - frac))) >> 12;
 
-    int32_t d2 = dl2[p2];
-    int32_t d3 = dl3[p3];
+    // int32_t d2 = dl2[p2];
+    // int32_t d3 = dl3[p3];
+    int32_t d2 = READ_DL2(p2);
+    int32_t d3 = READ_DL3(p3);
 
     // 4x4 HADAMARD MATRIX
     int32_t h0 = (d0 + d1 + d2 + d3) >> 1;
@@ -8496,10 +8775,14 @@ void IRAM_ATTR reverb_feedback() {
     if (in2 > 32700) in2 = 32700; else if (in2 < -32700) in2 = -32700;
     if (in3 > 32700) in3 = 32700; else if (in3 < -32700) in3 = -32700;
 
-    dl0[p0] = in0;
-    dl1[p1] = in1;
-    dl2[p2] = in2;
-    dl3[p3] = in3;
+    // dl0[p0] = in0;
+    // dl1[p1] = in1;
+    // dl2[p2] = in2;
+    // dl3[p3] = in3;
+    WRITE_DL0(p0, in0);
+    WRITE_DL1(p1, in1);
+    WRITE_DL2(p2, in2);
+    WRITE_DL3(p3, in3);
 
     // ADVANCE POINTERS (FLIP = REVERSE REVERB)
     if (FLIPPERAT) {
